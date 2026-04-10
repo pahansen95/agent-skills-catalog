@@ -173,3 +173,7 @@ Only the second type indicates the response failed. Treating knowledge-gap quest
 3. *Trust accumulated session context proportionally.* The same underspecified prompt means different things at turn 1 vs turn 20. *Principle: lean on session context proportional to its volume and consistency — a pattern established over many turns is safe to rely on; a single prior mention is not.*
 
 **What skill emerges:** When receiving underspecified input, estimate the cost of guessing wrong vs asking. Interpret charitably, leaning on session history. Match the *intent's* depth, not the prompt's word count. Bias toward explicit responses early in a session; trust shared context later.
+
+## References
+
+- **caveman** — JuliusBrussee. *why use many token when few do trick.* A skill for aggressive token compression in LLM output. [github.com/JuliusBrussee/caveman](https://github.com/JuliusBrussee/caveman)
