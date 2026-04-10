@@ -1,0 +1,9 @@
+[submodule "vendor/github.com/agentskills/agentskills"]
+	path = vendor/github.com/agentskills/agentskills
+	url = https://github.com/agentskills/agentskills
+[submodule "vendor/github.com/anthropics/skills"]
+	path = vendor/github.com/anthropics/skills
+	url = https://github.com/anthropics/skills
+[submodule "vendor/github.com/openai/skills"]
+	path = vendor/github.com/openai/skills
+	url = https://github.com/openai/skills
