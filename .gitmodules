@@ -7,3 +7,6 @@
 [submodule "vendor/github.com/openai/skills"]
 	path = vendor/github.com/openai/skills
 	url = https://github.com/openai/skills
+[submodule "vendor/github.com/JuliusBrussee/caveman"]
+	path = vendor/github.com/JuliusBrussee/caveman
+	url = https://github.com/JuliusBrussee/caveman
