@@ -1,6 +1,6 @@
-# Salience
+# Communication
 
-Salience is a continuous optimization problem: maximize understanding while minimizing communication, with the intent of reducing compute cost and time.
+This domain covers the optimization of communication between agents — human or LLM. The core problem is continuous: maximize understanding while minimizing communication, with the intent of reducing compute cost and time.
 
 In practical terms — fewer tokens per response, fewer responses per task, without sacrificing the quality of the outcome.
 
@@ -66,7 +66,7 @@ Overshoot risk: detecting a successful response and aggressively compressing the
 
 **External influences:** System prompts, tool schemas, context window limits, sampling parameters, training distribution biases. The sending model has no reliable model of how the receiving model will interpret a message.
 
-**Implication for salience:** Clarity and explicitness dominate over compression. Ambiguity that a human resolves through inference can derail an LLM. Compression here means eliminating *irrelevant* context (which dilutes attention) — not compressing *relevant* context into fewer words. The risk inverts: human-to-human over-communication wastes time; LLM-to-LLM under-specification produces degenerate output.
+**Implication for comms:** Clarity and explicitness dominate over compression. Ambiguity that a human resolves through inference can derail an LLM. Compression here means eliminating *irrelevant* context (which dilutes attention) — not compressing *relevant* context into fewer words. The risk inverts: human-to-human over-communication wastes time; LLM-to-LLM under-specification produces degenerate output.
 
 ---
 
@@ -82,13 +82,13 @@ Overshoot risk: detecting a successful response and aggressively compressing the
 
 **External influences on the human:** Domain expertise, cognitive load, attention, time pressure, trust in the model's output. A busy user skimming parses differently than one reading carefully.
 
-**Implication for salience:** This is where the PID loop operates. The LLM uses proxy signals from prior turns — did the user proceed, ask for clarification, rephrase, change register? Compression scales with accumulated shared context: more turns in, less explanation needed. The model should be conservative early in a session when shared context is thin.
+**Implication for comms:** This is where the PID loop operates. The LLM uses proxy signals from prior turns — did the user proceed, ask for clarification, rephrase, change register? Compression scales with accumulated shared context: more turns in, less explanation needed. The model should be conservative early in a session when shared context is thin.
 
 ---
 
 ### Human → LLM
 
-**What it looks like:** The user writing a prompt. The input side — salience doesn't control this, but it informs how the LLM should handle it.
+**What it looks like:** The user writing a prompt. The input side — this domain doesn't control this, but it informs how the LLM should handle it.
 
 **How each party operates:** The human encodes intent into text, choosing words they expect will condition good output — often informally, often incompletely. The LLM receives a flat token sequence with no access to the intent behind it; only the literal content and training associations.
 
@@ -98,7 +98,7 @@ Overshoot risk: detecting a successful response and aggressively compressing the
 
 **External influences on the LLM:** Only the tokens received. No tone, no body language, no shared history beyond the context window. Ambiguity in the input maps directly to entropy in the output.
 
-**Implication for salience:** The skill doesn't control user input, but it shapes how the LLM handles underspecification. A short clarifying question is more efficient than a long answer to the wrong interpretation. The model should not punish informal or incomplete prompts by being excessively literal.
+**Implication for comms:** The skill doesn't control user input, but it shapes how the LLM handles underspecification. A short clarifying question is more efficient than a long answer to the wrong interpretation. The model should not punish informal or incomplete prompts by being excessively literal.
 
 ---
 
