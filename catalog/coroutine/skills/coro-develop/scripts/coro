@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+declare CONTEXT; CONTEXT="$( cd -- "${BASH_SOURCE[0]%/*}" && pwd )"; declare -r CONTEXT
+[[ -d "${CONTEXT}" && "${CONTEXT##*/}" == "scripts" ]] || {
+  printf '%s: %s\n' 'Bad Context' "${CONTEXT}" >&2
+  exit 1
+}
+command -v just &>/dev/null || {
+  printf '%s\n' 'error: just is not in PATH' >&2
+  exit 1
+}
+exec just --justfile "${CONTEXT}/Justfile" --working-directory . "$@"

@@ -1,0 +1,43 @@
+# Coroutine CLI — just targets for managing stateful claude sessions
+#
+# Environment variables (set before invoking):
+#   CORO_MODEL      Claude model slug (default: sonnet)
+#   CORO_PROJECT    Project root path (default: auto-discover from cwd)
+#   CORO_ADD_DIRS   Colon-separated extra --add-dir paths for claude
+#
+# Usage:
+#   just setup                       # one-time venv setup
+#   just create <name>               # create session (pipe content for turn 1)
+#   coro send <name> <<< "msg"       # send turn to session
+#   just status <name>               # last YIELD signal
+#   just turns <name>                # all turns with cost
+#   just log <name> [turn]           # raw jsonl for a turn
+
+python := ".venv/bin/python"
+script := "coroutine.py"
+
+# One-time setup: pyenv local, uv venv (stdlib only — no pip installs needed)
+setup:
+    pyenv local 3.13
+    uv venv --python 3.13
+    @echo "venv ready at .venv"
+
+# Create a new session (sends embedded preamble; pipe content for turn 1)
+create name:
+    {{ python }} {{ script }} create {{ name }}
+
+# Send a message to an existing session (reads from stdin)
+send name:
+    {{ python }} {{ script }} send {{ name }}
+
+# Show the last YIELD signal for a session
+status name:
+    {{ python }} {{ script }} status {{ name }}
+
+# List all turns for a session with cost summary
+turns name:
+    {{ python }} {{ script }} turns {{ name }}
+
+# Print raw jsonl for a turn (default: last turn)
+log name turn="":
+    {{ python }} {{ script }} log {{ name }} {{ turn }}
