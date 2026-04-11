@@ -3,6 +3,14 @@
 A catalog of behavioral specs, each in its own subproject under `catalog/`.
 The `skills/*` directory allows multiple variants of a spec to coexist.
 
+I don't like the name `skill` — it anthropomorphizes a cluster of computers
+running linear algebra algorithms. This project is my collection of workflows
+automated via an agent: a software harness around an LLM — a high-dimensional
+pattern matching machine built to guess the next most probable token.
+
+These are procedural instructions that program an agent's behavior; equivalently,
+a behavioral spec.
+
 ## Simple skill
 
 A single behavioral spec with no supporting code:
@@ -56,13 +64,3 @@ Holds gitsubmodules for reference and specification:
 | [agentskills/agentskills](https://github.com/agentskills/agentskills) | Skills specification |
 | [anthropics/skills](https://github.com/anthropics/skills) | Anthropic's published skills |
 | [openai/skills](https://github.com/openai/skills) | OpenAI's published skills |
-
-## Skills?
-
-I don't like the name `skill` — it anthropomorphizes a cluster of computers
-running linear algebra algorithms. This project is my collection of workflows
-automated via an agent: a software harness around an LLM — a high-dimensional
-pattern matching machine built to guess the next most probable token.
-
-These are procedural instructions that program an agent's behavior; equivalently,
-a behavioral spec.
