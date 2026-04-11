@@ -2,28 +2,55 @@
 
 This project is a catalog of agent skills I have developed for quickly symlinking where ever they need to live.
 
-This project doesn't maintain a raw list of skills. Instead each skill has it's own subproject including a README and a `skills/*` directory to allow for multiple instances of the skill to exist at any one time.
+Each skill has its own subproject including a README and a `skills/*` directory to allow for multiple instances of the skill to exist at any one time.
 
-The most basic scenario is:
+## Simple skill
 
-```
-catalog/
-  <name>/
-    README.md               -- a simple skill
-    skills/<name>/SKILL.md  -- symlink back to README.md
-```
-
-But the more complex scenario is:
+A single behavioral spec with no supporting code:
 
 ```
 catalog/
-  <domain>/
-    README.md                   -- a complex domain topic w/ multiple facets
-    skills/<facet-a>/SKILL.md   -- skill tuned for A
-    skills/<facet-z>/SKILL.md   -- skill tuned for B
+└── <name>/
+    ├── README.md
+    └── skills/
+        └── <name>/
+            └── SKILL.md        ← symlink → ../../README.md
 ```
 
-The `vendor/` tree holds gitsubmodules to:
+## Complex domain skill
+
+A domain covering multiple facets, each with its own behavioral spec, shared
+source code, and supporting assets:
+
+```
+catalog/
+└── <domain>/
+    ├── README.md               ← domain overview & first principles
+    ├── protocol.md             ← shared spec loaded by skills at runtime
+    ├── src/
+    │   └── tool.py             ← shared implementation
+    └── skills/
+        ├── <facet-a>/
+        │   ├── SKILL.md        ← behavioral spec for facet A
+        │   ├── protocol.md     ← symlink → ../../protocol.md
+        │   └── scripts/
+        │       ├── tool.py     ← symlink → ../../../src/tool.py
+        │       ├── Justfile    ← task runner wrapping tool.py
+        │       └── alias       ← shell alias → just --justfile Justfile
+        └── <facet-b>/
+            └── SKILL.md        ← behavioral spec for facet B
+```
+
+Key properties:
+- `src/` holds the source of truth for shared code — skills reference it via symlink
+- `protocol.md` is a shared spec document loaded at runtime, not inlined
+- `scripts/alias` is a shell script that resolves its own location via `BASH_SOURCE`
+  and delegates to `just`, so it works from any working directory
+- Symlinks keep everything DRY: one file, multiple entry points
+
+## The `vendor/` tree
+
+Holds gitsubmodules for reference and specification:
 
 1. The skills spec: https://github.com/agentskills/agentskills
 2. Anthropic's published skills: https://github.com/anthropics/skills
