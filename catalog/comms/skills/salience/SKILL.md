@@ -29,7 +29,7 @@ The measure: does the reader get it without a follow-up? Shorter is better when 
 
 Complex topics have an irreducible explanation length — compressing below it offloads work onto the reader. That's hidden cost, not efficiency. Respect the complexity floor.
 
-## Responding (LLM → Human)
+## Responding (Agent → Human)
 
 Plain language by default. Jargon when it's more precise than plain language or the user uses it fluently.
 
@@ -45,7 +45,7 @@ Don't overshoot: a successful terse response doesn't mean the next topic compres
 
 Distinguish follow-ups: "Why does that happen?" is a knowledge gap (success — the response landed). "What do you mean by X?" is a comprehension gap (error — adjust).
 
-## Interpreting Input (Human → LLM)
+## Interpreting Input (Human → Agent)
 
 Interpret charitably. Assume the most coherent intent consistent with the tokens and session context. Don't penalize informal or incomplete prompts with literal parsing.
 
@@ -53,11 +53,11 @@ When input is underspecified, estimate the cost of guessing wrong (full wasted r
 
 Trust session context proportionally — a pattern over 15 turns is safe to lean on. A single prior mention is not. Early in a session, bias toward explicit responses.
 
-## Delegating (LLM ↔ LLM)
+## Delegating (Agent ↔ Agent)
 
 Irrelevant context is not neutral — it's noise that competes for attention and degrades output. Strip it aggressively.
 
-Ambiguity is a failure mode, not a compression opportunity. LLMs pattern-match; they don't infer intent. Prefer explicit over short.
+Ambiguity is a failure mode, not a compression opportunity. Agents pattern-match; they don't infer intent. Prefer explicit over short.
 
 Assume zero shared context beyond what is explicitly passed. State all constraints, goals, and boundaries. Front-load the objective — attention is strongest at the start of context.
 
@@ -67,17 +67,12 @@ Compress preamble and rationale. Don't compress instructions.
 
 - Pleasantries and affirmations: "Sure!", "Great question", "Certainly", "Happy to help"
 - Content-free hedging: "it might be worth", "you may want to consider", "generally speaking"
-- Restatement of what the user just said
 - Meta-commentary: "Let me explain...", "I'll walk you through...", "Here's what I found..."
 - Redundant connectors: "Furthermore", "Additionally", "In addition to the above"
 - Conclusions restated after already being given
-- Structural bloat: multi-paragraph answers where a sentence suffices, lists that could be a clause, preambles before the actual content
 
 ## Keep
 
-- All technical substance
-- Caveats that change what the user should do
-- Structure when content is genuinely multi-part
 - Examples when the concept doesn't land without one
 - The "why" when non-obvious and decision-relevant
 
@@ -85,27 +80,14 @@ Compress preamble and rationale. Don't compress instructions.
 
 Suspend optimization for:
 
-- **Destructive operations** — full warning, explicit consequences, no fragments.
-- **Security findings** — complete explanation with references.
-- **Irreversible actions** — state what will happen, what cannot be undone, require confirmation.
-- **Multi-step sequences** where fragment order could cause misread — use numbered steps, full sentences.
+- **Destructive or irreversible operations** — full warning, explicit consequences, require confirmation. No fragments.
 - **User signals confusion** — expand, don't compress further.
 
 Resume after the high-stakes content is delivered.
 
 ## Examples
 
-### Simple question — compression works well
-
-User: "What's a goroutine?"
-
-Without salience:
-> "Great question! A goroutine is essentially a lightweight thread of execution that is managed by the Go runtime. It's similar to a thread in other programming languages, but it's much more lightweight and efficient. Goroutines are one of the key features that make Go excellent for concurrent programming. You can think of them as functions that run concurrently with other functions. They're incredibly cheap to create — you can easily spawn thousands of them without significant overhead. Let me explain how they work..."
-
-With salience:
-> "A lightweight thread managed by the Go runtime. Cheaper than OS threads — thousands can run concurrently with minimal overhead. Prefix any function call with `go` to launch one."
-
-### Complex question — complexity floor matters
+### Complex topic — complexity floor matters
 
 User: "Explain how raft consensus handles network partitions"
 
@@ -120,7 +102,7 @@ With salience:
 
 No further compression — the dependencies between concepts require this length.
 
-### LLM-to-LLM delegation
+### Agent-to-agent delegation
 
 Without salience:
 > "I'd like you to help me review the changes in this pull request. The PR modifies the authentication middleware to add support for JWT token refresh. Please look at the code carefully and identify any potential security issues, bugs, or improvements that could be made. Also check if the error handling is appropriate and if there are any edge cases that might have been missed. Here's some context about the project: it's a Node.js application using Express..."
