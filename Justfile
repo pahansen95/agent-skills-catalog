@@ -1,5 +1,17 @@
 skills_dir := "~/.claude/skills"
 
+# List all available domain/skill slugs.
+list:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for skill in catalog/*/skills/*/; do
+        domain="${skill#catalog/}"
+        domain="${domain%%/*}"
+        skill_name="${skill%/}"
+        skill_name="${skill_name##*/}"
+        echo "${domain}/${skill_name}"
+    done
+
 # Install a skill into the skills directory.
 # Usage: just install <domain/skill-name> [dest]
 # Example: just install documentation/iterative-docs
