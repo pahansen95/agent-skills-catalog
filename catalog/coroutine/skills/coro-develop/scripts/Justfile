@@ -14,7 +14,7 @@
 #   just log <name> [turn]           # raw jsonl for a turn
 
 python := ".venv/bin/python"
-script := "coroutine.py"
+script := justfile_directory() / "coroutine.py"
 
 # One-time setup: pyenv local, uv venv (stdlib only — no pip installs needed)
 setup:
