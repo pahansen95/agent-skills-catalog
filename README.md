@@ -1,8 +1,7 @@
 # Agent Skills Catalog
 
-This project is a catalog of agent skills I have developed for quickly symlinking where ever they need to live.
-
-Each skill has its own subproject including a README and a `skills/*` directory to allow for multiple instances of the skill to exist at any one time.
+A catalog of behavioral specs, each in its own subproject under `catalog/`.
+The `skills/*` directory allows multiple variants of a spec to coexist.
 
 ## Simple skill
 
@@ -60,6 +59,10 @@ Holds gitsubmodules for reference and specification:
 
 ## Skills?
 
-I don't like the name `skill` because we anthropomorphize a cluster of computers running linear algebra algorithms. Really this project is my collection of workflows that I automate through the use of an agent: a software harness around an LLM — a high-dimensional pattern matching machine built to guess the next most probable token.
+I don't like the name `skill` — it anthropomorphizes a cluster of computers
+running linear algebra algorithms. This project is my collection of workflows
+automated via an agent: a software harness around an LLM — a high-dimensional
+pattern matching machine built to guess the next most probable token.
 
-These skills are effectively procedural instructions that program an agent's behavior; you might also hear me say `behavioral spec`.
+These are procedural instructions that program an agent's behavior; equivalently,
+a behavioral spec.
