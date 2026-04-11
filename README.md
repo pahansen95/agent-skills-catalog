@@ -52,10 +52,11 @@ Key properties:
 
 Holds gitsubmodules for reference and specification:
 
-1. The skills spec: https://github.com/agentskills/agentskills
-2. Anthropic's published skills: https://github.com/anthropics/skills
-3. OpenAI's published skills: https://github.com/openai/skills
-4. Other published skills & references
+| Submodule | Purpose |
+|---|---|
+| [agentskills/agentskills](https://github.com/agentskills/agentskills) | Skills specification |
+| [anthropics/skills](https://github.com/anthropics/skills) | Anthropic's published skills |
+| [openai/skills](https://github.com/openai/skills) | OpenAI's published skills |
 
 ## Skills?
 
