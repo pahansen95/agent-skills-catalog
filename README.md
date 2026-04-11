@@ -14,7 +14,7 @@ catalog/
     ├── README.md
     └── skills/
         └── <name>/
-            └── SKILL.md        ← symlink → ../../README.md
+            └── SKILL.md        -- symlink → ../../README.md
 ```
 
 ## Complex domain skill
@@ -25,20 +25,20 @@ source code, and supporting assets:
 ```
 catalog/
 └── <domain>/
-    ├── README.md               ← domain overview & first principles
-    ├── protocol.md             ← shared spec loaded by skills at runtime
+    ├── README.md               -- domain overview & first principles
+    ├── protocol.md             -- shared spec loaded by skills at runtime
     ├── src/
-    │   └── tool.py             ← shared implementation
+    │   └── tool.py             -- shared implementation
     └── skills/
         ├── <facet-a>/
-        │   ├── SKILL.md        ← behavioral spec for facet A
-        │   ├── protocol.md     ← symlink → ../../protocol.md
+        │   ├── SKILL.md        -- behavioral spec for facet A
+        │   ├── protocol.md     -- symlink → ../../protocol.md
         │   └── scripts/
-        │       ├── tool.py     ← symlink → ../../../src/tool.py
-        │       ├── Justfile    ← task runner wrapping tool.py
-        │       └── alias       ← shell alias → just --justfile Justfile
+        │       ├── tool.py     -- symlink → ../../../src/tool.py
+        │       ├── Justfile    -- task runner wrapping tool.py
+        │       └── alias       -- shell alias → just --justfile Justfile
         └── <facet-b>/
-            └── SKILL.md        ← behavioral spec for facet B
+            └── SKILL.md        -- behavioral spec for facet B
 ```
 
 Key properties:
