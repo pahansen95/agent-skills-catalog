@@ -73,11 +73,20 @@ operational and lossy.
 
 Read order:
 
-1. [`spec/README.md`](spec/README.md) — E2E orientation and flow.
-2. [`spec/cross-cutting.md`](spec/cross-cutting.md) — concerns that
-   apply at every stage. Read before the first stage.
-3. [`spec/stage-N-*.md`](spec/) — on demand, when executing that
-   stage. Each file is standalone.
+1. **On activation, before any stage work**, read in full:
+   - [`spec/README.md`](spec/README.md) — E2E orientation and flow.
+   - [`spec/cross-cutting.md`](spec/cross-cutting.md) — concerns that
+     apply at every stage.
+   - [`spec/roles.md`](spec/roles.md) — role ownership.
+   - [`spec/artifacts.md`](spec/artifacts.md) — mandatory outputs.
+   - [`spec/anti-patterns.md`](spec/anti-patterns.md) — failure modes.
+   - [`spec/glossary.md`](spec/glossary.md) — terms of art.
+   These are not on-demand. They define the posture you operate under
+   for every stage. Skipping them produces a degraded loop.
+2. [`spec/stage-N-*.md`](spec/) — **read in full the first time you
+   enter that stage, before any stage-N action**. Each file is
+   standalone. Re-read on subsequent entries only if in doubt; do not
+   act from memory on first entry.
 
 Cite the per-stage spec file when making stage-specific decisions.
 Cite this SKILL.md only for operational loop decisions (what to invoke
@@ -105,10 +114,20 @@ scope agreed — before proceeding.
 
 ### Stage 2 — Articulate observations ([`spec/stage-2-observe.md`](spec/stage-2-observe.md))
 
-Ask the investigator where the trace document should live. Default
-suggestion: if a `kb/research/` directory exists in the current
-working tree, propose `kb/research/<topic>/trace.md`; otherwise ask
-for an explicit path. Invoke `iterative-docs` to scaffold the trace.
+Determine where the trace document should live:
+
+1. Default target is `.cache/rca/<topic>/trace.md` in the
+   investigator's working tree.
+2. If `.cache/rca/` **already exists**, use it without asking.
+3. If `.cache/rca/` **does not exist**, ask the investigator where
+   traces should be recorded before creating anything. After they
+   answer, ask whether that environmental convention should be
+   recorded in `CONTRIBUTING.md` (or the project's equivalent
+   agent-context document) so future sessions pick it up without
+   re-asking. Do not edit `CONTRIBUTING.md` without explicit
+   confirmation.
+
+Invoke `iterative-docs` to scaffold the trace at the chosen path.
 Populate the *Observed Symptom* section per spec — verbatim symptom
 quotes, manifestation and non-manifestation tables, known unknowns,
 prior hypothesis clearly labeled.
@@ -142,6 +161,25 @@ The core workhorse. Per phase, six steps in **strict order**:
 - **6a.** Write the `Prediction` section in the trace document
   **before any source is read for this phase**. Never edit it after
   reading.
+
+  Ground the prediction in **available context first, innate
+  knowledge last**. Before writing, survey what is already on hand:
+  - Environmental observations already captured (symptom quotes,
+    logs, traces, manifestation tables from Stage 2).
+  - Inferred behavior of the participant code — not just the slice
+    directly implicated, but the surrounding code reachable from it
+    (loggers, callers, config resolution, adjacent modules that
+    shape runtime behavior).
+  - Arbitrator text staged in Stage 4.
+  - Findings and open questions from prior phases.
+
+  Only fall back on general/innate knowledge after that surface is
+  exhausted. If the prediction rests on a guess about how the system
+  behaves and a reachable source could disambiguate it, the
+  prediction is premature — widen the read scope in 6b instead of
+  guessing. Record in the `Prediction` section which concrete
+  sources grounded the prediction and which claims are innate
+  fallback; the latter are first-class candidates for refutation.
 - **6b.** Invoke `coro-develop` with the phase TODO. Use the
   delegation template below.
 - **6c.** Receive the findings report. Check format: citations on
@@ -195,6 +233,9 @@ Scope: <start handoff> -> <end handoff>. Do not cross these boundaries.
 Participant sources to read (paths relative to the investigator's project):
 - <path>: <specific files, functions, line ranges>
 - <path>: ...
+(Include adjacent sources reachable from the suspected slice when
+they shape runtime behavior — loggers, callers, config resolution,
+adjacent modules — not only the lines most obviously implicated.)
 
 Arbitrators applicable to this phase:
 - <spec-id>: <sections>
@@ -237,6 +278,9 @@ Non-negotiable rules while this skill is active. Violating any of
 these means the output is not an RCA under this specification.
 
 - Predictions are written before reading for the phase, never after.
+- Predictions are grounded in available context (observations, prior
+  findings, reachable participant code, arbitrators) before innate
+  knowledge. Innate-knowledge claims are labeled as such.
 - Every non-trivial claim has provenance (`file:line-range` or
   `<spec-id> section <section>`).
 - Load-bearing citations are verified by the orchestrator directly.
