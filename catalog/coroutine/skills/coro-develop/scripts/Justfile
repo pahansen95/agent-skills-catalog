@@ -57,3 +57,11 @@ list-sessions:
 # Scaffold a new phase spec + kickoff from templates
 new-phase slug:
     {{ python }} {{ script }} new-phase {{ slug }}
+
+# Mark session as awaiting human input (optional reason)
+hold name reason="":
+    {{ python }} {{ script }} hold {{ name }} {{ reason }}
+
+# Clear hold on session
+unhold name:
+    {{ python }} {{ script }} unhold {{ name }}

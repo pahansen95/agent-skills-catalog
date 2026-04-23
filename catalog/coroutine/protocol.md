@@ -32,7 +32,6 @@ corresponding response from the orchestrator.
 | `FAILED` | Something broke — details in summary | Read error, send `FIX: <description>` or escalate |
 | `RUNNING` | Work in progress, will continue | Send `CONTINUE` |
 | `CHECK` | Asks orchestrator to verify an artifact | Inspect, send `VERIFY: <result>` |
-| `USER_HOLD` | Paused pending a human decision _(deprecated; removed in ζ)_ | Orchestrator STOPS polling; resumes only on explicit human input |
 
 ### Examples
 
@@ -42,31 +41,7 @@ YIELD: BLOCKED | need decision: 1K or 4K block size for ext4?
 YIELD: FAILED | crc32c mismatch on superblock — computed 0x1234 expected 0x5678
 YIELD: RUNNING | implementing block group descriptor table, ~50% complete
 YIELD: CHECK | please verify loop device mounts correctly at /mnt/test
-YIELD: USER_HOLD | paused: production deploy requires human approval
 ```
-
-### `USER_HOLD` — pausing for a human
-
-`USER_HOLD` signals that the session cannot progress until a human provides
-input. Two paths reach it:
-
-- **Orchestrator-initiated.** The orchestrator decides the current state
-  requires human judgment (credentials, design call, infrastructure access,
-  scope change) and instructs the worker to hold — or the orchestrator simply
-  stops driving and marks the session as held.
-- **Worker-initiated.** The worker determines that only a human can resolve
-  the current decision (ethical gate, business policy, access it cannot
-  obtain) and self-emits `USER_HOLD` instead of `BLOCKED`. _(Deprecated; the
-  worker has no routing authority — escalation is the orchestrator's decision.
-  Phase ζ removes this path from the worker's emit vocabulary.)_
-
-While a session is in `USER_HOLD`, the orchestrator **idles the polling
-loop** — no `coro status`, no re-checks, no automated turns. Time and cost
-are not consumed by speculative polling.
-
-Resume is always explicit and human-driven: the human sends a normal
-`DECIDE: <answer>` (or other appropriate message) via `coro send`. The next
-YIELD returns the session to its ordinary lifecycle.
 
 ## Worker FSM
 
@@ -88,7 +63,7 @@ observables (message received, YIELD emitted), not semantic intent.
 | From | Event | To | Notes |
 |---|---|---|---|
 | `IDLE` | `RECV:` any orchestrator message | `WORKING` | first turn |
-| `WORKING` | `EMIT: DONE / BLOCKED / FAILED / RUNNING / USER_HOLD` | `AWAITING` | non-CHECK YIELD |
+| `WORKING` | `EMIT: DONE / BLOCKED / FAILED / RUNNING` | `AWAITING` | non-CHECK YIELD |
 | `WORKING` | `EMIT: CHECK` | `CHECKPOINT` | per-commit checkpoint |
 | `AWAITING` | `RECV:` any non-ABORT message | `WORKING` | resume |
 | `CHECKPOINT` | `RECV: VERIFY` | `WORKING` | proceed after inspection |
@@ -113,8 +88,8 @@ observables (message received, YIELD emitted), not semantic intent.
        | EMIT:         | EMIT: CHECK                   |
        | DONE/BLOCKED/ |                               |
        | FAILED/       v                               |
-       | RUNNING/ +------------+                       |
-       | USER_HOLD| CHECKPOINT | RECV: VERIFY ---------+
+       | RUNNING  +------------+                       |
+       |          | CHECKPOINT | RECV: VERIFY ---------+
        |          +-----+------+
        v                | RECV: ABORT
   +----------+          |
@@ -160,13 +135,14 @@ reflect what the orchestrator observes and what action it is taking.
 | `RUNNING` | `RECV: FAILED` | `RESOLVING` | needs fix |
 | `RUNNING` | `RECV: RUNNING` | `RUNNING` | send `CONTINUE`, stay in RUNNING |
 | `RUNNING` | `RECV: CHECK` | `VERIFYING` | inspect artifact |
-| `RUNNING` | `RECV: USER_HOLD` | `ESCALATED` | _(deprecated path; ζ removes)_ |
 | `IDLE` | `SEND:` next instruction | `RUNNING` | continue phase |
 | `IDLE` | declare complete | `COMPLETE` | phase ship; terminal |
 | `RESOLVING` | `SEND: DECIDE / FIX` | `RUNNING` | resolved locally |
-| `RESOLVING` | escalate to human | `ESCALATED` | orchestrator determines human input needed; stops polling |
+| `RESOLVING` | `coro hold <name> [<reason>]` | `ESCALATED` | orchestrator determines human input needed; stops polling |
+| `IDLE` | `coro hold <name> [<reason>]` | `ESCALATED` | any non-terminal state can transition to ESCALATED via orchestrator action |
 | `VERIFYING` | `SEND: VERIFY` | `RUNNING` | proceed |
-| `ESCALATED` | human input received → `SEND:` message | `RUNNING` | resume |
+| `ESCALATED` | `coro send <name> ...` | `RUNNING` | send auto-clears hold sentinel |
+| `ESCALATED` | `coro unhold <name>` | _(prior state)_ | explicit unhold without sending |
 | any | `SEND: ABORT` | `ABORTED` | terminal |
 
 ### Diagram
@@ -182,29 +158,60 @@ reflect what the orchestrator observes and what action it is taking.
        v
   +-----------------------------------------------------------+
   |                        RUNNING                            |
-  +---+----------+----------+----------+----------+-----------+
-      |          |          |          |          |
-   RECV:      RECV:      RECV:      RECV:      RECV:
-   DONE      BLOCKED    FAILED     CHECK    USER_HOLD(depr.)
-      |          |          |          |          |
-      v          v          v          v          v
-  +------+  +-----------+  +-----------+  +----------+
-  | IDLE |  | RESOLVING |  | VERIFYING |  | ESCALATED|
-  +--+---+  +-----+-----+  +-----+-----+  +----+-----+
-     |            |               |              |
-     | SEND:      | SEND:         | SEND:        | human
-     | instr.     | DECIDE/FIX    | VERIFY       | input
-     |            |               |              |
-     +------------+---------------+--------------+
+  +---+----------+----------+----------+--------------------+-+
+      |          |          |          |
+   RECV:      RECV:      RECV:      RECV:
+   DONE      BLOCKED    FAILED     CHECK
+      |          |          |          |
+      v          v          v          v
+  +------+  +-----------+  +-----------+
+  | IDLE |  | RESOLVING |  | VERIFYING |
+  +--+---+  +-----+-----+  +-----+-----+
+     |            |               |
+     | SEND:      | SEND:         | SEND:
+     | instr.     | DECIDE/FIX    | VERIFY
+     |            |               |
+     +------------+---------------+
                   |
                   v
              (back to RUNNING)
+
+  IDLE or RESOLVING --[coro hold <name>]--> +----------+
+                                            | ESCALATED|
+  coro send <name> (auto-clears hold) ----> +----+-----+
+                                                 |
+                             (back to RUNNING) <-+
+  coro unhold <name> ---------> (prior state)
 
   +----------+   +----------+
   | COMPLETE |   | ABORTED  |   <- terminal states
   +----------+   +----------+
   IDLE→declare   any→SEND:ABORT
 ```
+
+## Session-state overlays
+
+Overlays are out-of-band session state managed by the orchestrator. They do
+not affect the worker's YIELD vocabulary or FSM. Workers have no awareness
+of overlays; they are purely an orchestrator-side mechanism.
+
+### Hold sentinel
+
+**File**: `.cache/sessions/<name>.hold`
+
+**Format**: first line is the optional reason string (may be empty); second
+line is an ISO-8601 UTC timestamp written at hold time (useful for diagnosing
+stale holds).
+
+**Who writes it**: the orchestrator, via `coro hold <name> [<reason>]`.
+**Who reads it**: `coro status` (non-destructively) and `coro send` (clears
+it before acquiring the send lock).
+
+- `coro hold` writes idempotently (overwrites if already held).
+- `coro unhold` removes the sentinel; no error if absent.
+- `coro send` auto-clears the sentinel before the send lock is acquired and
+  emits a stderr note: `note: cleared hold on session '<name>' (reason: ...)`.
+- `coro status` surfaces hold state on a `hold:` line in its output block.
 
 ## Orchestrator messages
 
@@ -239,12 +246,12 @@ output = send(session, message)
 signal = parse_yield(output)   # last line: "YIELD: STATUS | summary"
 
 match signal.status:
-  DONE      → send next instruction OR declare phase complete
-  BLOCKED   → formulate decision → send "DECIDE: <answer>"
-  FAILED    → diagnose → send "FIX: <description>" OR escalate to human
-  RUNNING   → send "CONTINUE"
-  CHECK     → inspect artifact → send "VERIFY: <result>"
-  USER_HOLD → STOP polling; resume only on explicit human input
+  DONE    → send next instruction OR declare phase complete
+  BLOCKED → formulate decision → send "DECIDE: <answer>"
+            if human input needed: run "coro hold <name> '<reason>'" and stop
+  FAILED  → diagnose → send "FIX: <description>" OR escalate to human
+  RUNNING → send "CONTINUE"
+  CHECK   → inspect artifact → send "VERIFY: <result>"
 ```
 
 Human escalation: surface to the human when BLOCKED on questions requiring
@@ -255,6 +262,7 @@ their input (credentials, design decisions, infrastructure access).
 ```
 <project>/.cache/sessions/<name>.uuid    # session UUID
 <project>/.cache/sessions/<name>.meta   # model used
+<project>/.cache/sessions/<name>.hold   # hold sentinel (orchestrator-only)
 <project>/.cache/turns/<name>-NNN.jsonl # raw stream-json per turn
 ```
 

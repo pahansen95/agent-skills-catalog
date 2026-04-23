@@ -26,6 +26,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO
 
@@ -156,6 +157,32 @@ def check_send_lock(root: Path, name: str) -> bool:
         fh.close()
     return False
 
+def hold_sentinel_path(root: Path, name: str) -> Path:
+    return sessions_dir(root) / f"{name}.hold"
+
+def write_hold(root: Path, name: str, reason: str) -> None:
+    p = hold_sentinel_path(root, name)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).isoformat()
+    p.write_text(f"{reason}\n{ts}\n" if reason else f"\n{ts}\n")
+
+def clear_hold(root: Path, name: str) -> str | None:
+    """Remove sentinel; return prior reason if any (for logging)."""
+    p = hold_sentinel_path(root, name)
+    if not p.exists():
+        return None
+    text = p.read_text()
+    p.unlink()
+    lines = text.splitlines()
+    return lines[0] if lines and lines[0].strip() else None
+
+def read_hold(root: Path, name: str) -> tuple[bool, str]:
+    p = hold_sentinel_path(root, name)
+    if not p.exists():
+        return (False, "")
+    lines = p.read_text().splitlines()
+    return (True, lines[0] if lines and lines[0].strip() else "")
+
 def current_stack_path(root: Path) -> Path:
     return sessions_dir(root) / "CURRENT"
 
@@ -282,7 +309,9 @@ def extract_yield(text: str) -> str | None:
     return None
 
 def warn_missing_yield(turn: int) -> None:
-    msg = f"warning: turn {turn} has no YIELD line; protocol violation"
+    _warn(f"warning: turn {turn} has no YIELD line; protocol violation")
+
+def _warn(msg: str) -> None:
     if sys.stderr.isatty():
         msg = f"\033[33m{msg}\033[0m"
     print(msg, file=sys.stderr)
@@ -361,11 +390,8 @@ def cmd_create(args, root: Path):
     # Turn 1 (optional): if stdin has content, send immediately
     # Deprecated: use 'coro send <name>' for turn 1 instead.
     if not sys.stdin.isatty():
-        msg = ("warning: 'coro create <name> < file' is deprecated; "
-               "use 'coro send <name> < file' for turn 1")
-        if sys.stderr.isatty():
-            msg = f"\033[33m{msg}\033[0m"
-        print(msg, file=sys.stderr)
+        _warn("warning: 'coro create <name> < file' is deprecated; "
+              "use 'coro send <name> < file' for turn 1")
 
         extra = sys.stdin.read().strip()
         if extra:
@@ -394,6 +420,13 @@ def cmd_send(root: Path, name: str | None):
     model = meta.get("model", _model())
 
     content = read_stdin_or_die()
+
+    prior_hold = clear_hold(root, name)
+    if prior_hold is not None:
+        msg = f"note: cleared hold on session '{name}'"
+        if prior_hold:
+            msg += f" (reason: {prior_hold})"
+        print(msg, file=sys.stderr)
 
     lock_fh = acquire_send_lock(root, name)
     try:
@@ -441,7 +474,17 @@ def cmd_status(root: Path, name: str | None):
 
     total_cost = session_total_cost(root, name)
 
+    is_held, hold_reason = read_hold(root, name)
+    if is_held:
+        hold_str = f"yes — {hold_reason}" if hold_reason else "yes"
+    else:
+        hold_str = "no"
+
     if signal:
+        status_token = signal.split("|")[0].replace("YIELD:", "").strip()
+        if status_token.upper() == "USER_HOLD":
+            _warn("warning: legacy USER_HOLD status observed; this signal is deprecated. Use 'coro hold' instead.")
+            signal = "YIELD: BLOCKED |" + (signal.split("|", 1)[1] if "|" in signal else "") + " (legacy USER_HOLD)"
         yield_str = signal
     else:
         last_line = text.strip().splitlines()[-1] if text.strip() else "(no output)"
@@ -450,6 +493,7 @@ def cmd_status(root: Path, name: str | None):
     W = 10  # label column width
     print(f"{'session:':{W}}{name}")
     print(f"{'sending:':{W}}{'yes' if held else 'no'}")
+    print(f"{'hold:':{W}}{hold_str}")
     print(f"{'tokens:':{W}}{tokens_str}")
     print(f"{'cost:':{W}}${total_cost:.4f} total")
     print(f"{'yield:':{W}}{yield_str}")
@@ -462,17 +506,11 @@ def cmd_status(root: Path, name: str | None):
         warn_threshold = token_warn_threshold(model, ctx_window)
         if total_ctx > warn_threshold:
             pct = int(total_ctx / ctx_window * 100)
-            msg = f"warning: last turn used {total_ctx} input tokens — {pct}% of {model} context ({ctx_window})"
-            if sys.stderr.isatty():
-                msg = f"\033[33m{msg}\033[0m"
-            print(msg, file=sys.stderr)
+            _warn(f"warning: last turn used {total_ctx} input tokens — {pct}% of {model} context ({ctx_window})")
 
     cost_threshold = cost_warn_threshold()
     if total_cost > cost_threshold:
-        msg = f"warning: session cost ${total_cost:.2f} exceeds threshold ${cost_threshold:.2f}"
-        if sys.stderr.isatty():
-            msg = f"\033[33m{msg}\033[0m"
-        print(msg, file=sys.stderr)
+        _warn(f"warning: session cost ${total_cost:.2f} exceeds threshold ${cost_threshold:.2f}")
 
 
 def cmd_turns(root: Path, name: str | None):
@@ -555,6 +593,26 @@ def cmd_new_phase(args, root: Path):
     print(f"created {kickoff_path}")
 
 
+def cmd_hold(args, root: Path) -> int:
+    name = resolve_name(root, args.name)
+    load_session(root, name)
+    reason = " ".join(r for r in (args.reason or []) if r.strip())
+    write_hold(root, name, reason)
+    print(f"held session '{name}'" + (f" — {reason}" if reason else ""))
+    return 0
+
+
+def cmd_unhold(args, root: Path) -> int:
+    name = resolve_name(root, args.name)
+    load_session(root, name)
+    prior = clear_hold(root, name)
+    if prior is None:
+        print(f"session '{name}' was not held")
+    else:
+        print(f"unheld session '{name}'" + (f" (was: {prior})" if prior else ""))
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -599,6 +657,13 @@ def main():
 
     sub.add_parser("list", help="Show the CURRENT stack, top to bottom")
 
+    p_hold = sub.add_parser("hold", help="Mark session as awaiting human input")
+    p_hold.add_argument("name", nargs="?", default=None)
+    p_hold.add_argument("reason", nargs="*", help="optional reason")
+
+    p_unhold = sub.add_parser("unhold", help="Clear hold on session")
+    p_unhold.add_argument("name", nargs="?", default=None)
+
     args = parser.parse_args()
     root = find_project_root()
 
@@ -620,6 +685,10 @@ def main():
         cmd_pop(root)
     elif args.command == "list":
         cmd_list_sessions(root)
+    elif args.command == "hold":
+        sys.exit(cmd_hold(args, root))
+    elif args.command == "unhold":
+        sys.exit(cmd_unhold(args, root))
 
 
 if __name__ == "__main__":
