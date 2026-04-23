@@ -21,6 +21,10 @@ YIELD: <STATUS> | <summary>
 
 ### Status values
 
+The following YIELD statuses are what the worker may emit while in the WORKING
+state. Each emission triggers a transition in the Worker FSM (see below) and a
+corresponding response from the orchestrator.
+
 | Status | Meaning | Orchestrator action |
 |---|---|---|
 | `DONE` | Work complete or ready for next instruction | Send next instruction or declare phase complete |
@@ -28,7 +32,7 @@ YIELD: <STATUS> | <summary>
 | `FAILED` | Something broke — details in summary | Read error, send `FIX: <description>` or escalate |
 | `RUNNING` | Work in progress, will continue | Send `CONTINUE` |
 | `CHECK` | Asks orchestrator to verify an artifact | Inspect, send `VERIFY: <result>` |
-| `USER_HOLD` | Paused pending a human decision | Orchestrator STOPS polling; resumes only on explicit human input |
+| `USER_HOLD` | Paused pending a human decision _(deprecated; removed in ζ)_ | Orchestrator STOPS polling; resumes only on explicit human input |
 
 ### Examples
 
@@ -52,7 +56,9 @@ input. Two paths reach it:
   stops driving and marks the session as held.
 - **Worker-initiated.** The worker determines that only a human can resolve
   the current decision (ethical gate, business policy, access it cannot
-  obtain) and self-emits `USER_HOLD` instead of `BLOCKED`.
+  obtain) and self-emits `USER_HOLD` instead of `BLOCKED`. _(Deprecated; the
+  worker has no routing authority — escalation is the orchestrator's decision.
+  Phase ζ removes this path from the worker's emit vocabulary.)_
 
 While a session is in `USER_HOLD`, the orchestrator **idles the polling
 loop** — no `coro status`, no re-checks, no automated turns. Time and cost
@@ -61,6 +67,144 @@ are not consumed by speculative polling.
 Resume is always explicit and human-driven: the human sends a normal
 `DECIDE: <answer>` (or other appropriate message) via `coro send`. The next
 YIELD returns the session to its ordinary lifecycle.
+
+## Worker FSM
+
+The worker operates as a mechanical state machine. States reflect runtime
+observables (message received, YIELD emitted), not semantic intent.
+
+### States
+
+| State | Description |
+|---|---|
+| `IDLE` | Preamble accepted; awaiting first orchestrator message |
+| `WORKING` | Orchestrator message received; processing (message-received → YIELD-emitted) |
+| `AWAITING` | Non-CHECK YIELD emitted; awaiting next orchestrator message |
+| `CHECKPOINT` | `CHECK` YIELD emitted; awaiting `VERIFY` |
+| `HALTED` | Terminal — `ABORT` received or session ended |
+
+### Transitions
+
+| From | Event | To | Notes |
+|---|---|---|---|
+| `IDLE` | `RECV:` any orchestrator message | `WORKING` | first turn |
+| `WORKING` | `EMIT: DONE / BLOCKED / FAILED / RUNNING / USER_HOLD` | `AWAITING` | non-CHECK YIELD |
+| `WORKING` | `EMIT: CHECK` | `CHECKPOINT` | per-commit checkpoint |
+| `AWAITING` | `RECV:` any non-ABORT message | `WORKING` | resume |
+| `CHECKPOINT` | `RECV: VERIFY` | `WORKING` | proceed after inspection |
+| `AWAITING` | `RECV: ABORT` | `HALTED` | terminal |
+| `CHECKPOINT` | `RECV: ABORT` | `HALTED` | terminal |
+| `WORKING` | `RECV: ABORT` | _(deferred)_ | ABORT honored at end of current turn, not mid-generation |
+
+### Diagram
+
+```
+          +---------+
+          |  IDLE   |
+          +----+----+
+               | RECV: any
+               v
+          +---------+  <-------------------------------+
+          | WORKING |                                  |
+          +----+----+                                  |
+               |                                       |
+       +-------+-------+                               |
+       |               |                               |
+       | EMIT:         | EMIT: CHECK                   |
+       | DONE/BLOCKED/ |                               |
+       | FAILED/       v                               |
+       | RUNNING/ +------------+                       |
+       | USER_HOLD| CHECKPOINT | RECV: VERIFY ---------+
+       |          +-----+------+
+       v                | RECV: ABORT
+  +----------+          |
+  | AWAITING |          v
+  +----+-----+     +--------+
+       |            | HALTED |
+       | RECV: any  +--------+
+       | non-ABORT       ^
+       |                 |
+       | RECV: ABORT ----+
+       v
+  (back to WORKING via arc above)
+
+  Note: RECV: ABORT while WORKING is deferred — honored at turn end.
+```
+
+## Orchestrator FSM
+
+The orchestrator maintains one FSM instance per managed worker session. States
+reflect what the orchestrator observes and what action it is taking.
+
+### States
+
+| State | Description |
+|---|---|
+| `SPAWNED` | `coro create` issued; preamble accepted by worker |
+| `RUNNING` | Orchestrator has sent a message; worker is in WORKING |
+| `IDLE` | Observed `DONE`; orchestrator deciding next action |
+| `RESOLVING` | Observed `BLOCKED` or `FAILED`; orchestrator determining response |
+| `VERIFYING` | Observed `CHECK`; orchestrator inspecting artifact |
+| `ESCALATED` | Human input required; polling suspended |
+| `COMPLETE` | Phase shipped; session terminal |
+| `ABORTED` | Terminal — orchestrator sent `ABORT` |
+
+### Transitions
+
+| From | Event | To | Notes |
+|---|---|---|---|
+| _(none)_ | `coro create` succeeds | `SPAWNED` | initial state |
+| `SPAWNED` | `SEND:` orient/kickoff message | `RUNNING` | first turn |
+| `RUNNING` | `RECV: DONE` | `IDLE` | worker awaiting next instruction |
+| `RUNNING` | `RECV: BLOCKED` | `RESOLVING` | needs decision |
+| `RUNNING` | `RECV: FAILED` | `RESOLVING` | needs fix |
+| `RUNNING` | `RECV: RUNNING` | `RUNNING` | send `CONTINUE`, stay in RUNNING |
+| `RUNNING` | `RECV: CHECK` | `VERIFYING` | inspect artifact |
+| `RUNNING` | `RECV: USER_HOLD` | `ESCALATED` | _(deprecated path; ζ removes)_ |
+| `IDLE` | `SEND:` next instruction | `RUNNING` | continue phase |
+| `IDLE` | declare complete | `COMPLETE` | phase ship; terminal |
+| `RESOLVING` | `SEND: DECIDE / FIX` | `RUNNING` | resolved locally |
+| `RESOLVING` | escalate to human | `ESCALATED` | orchestrator determines human input needed; stops polling |
+| `VERIFYING` | `SEND: VERIFY` | `RUNNING` | proceed |
+| `ESCALATED` | human input received → `SEND:` message | `RUNNING` | resume |
+| any | `SEND: ABORT` | `ABORTED` | terminal |
+
+### Diagram
+
+```
+  coro create
+      |
+      v
+  +----------+
+  | SPAWNED  |
+  +----+-----+
+       | SEND: kickoff
+       v
+  +-----------------------------------------------------------+
+  |                        RUNNING                            |
+  +---+----------+----------+----------+----------+-----------+
+      |          |          |          |          |
+   RECV:      RECV:      RECV:      RECV:      RECV:
+   DONE      BLOCKED    FAILED     CHECK    USER_HOLD(depr.)
+      |          |          |          |          |
+      v          v          v          v          v
+  +------+  +-----------+  +-----------+  +----------+
+  | IDLE |  | RESOLVING |  | VERIFYING |  | ESCALATED|
+  +--+---+  +-----+-----+  +-----+-----+  +----+-----+
+     |            |               |              |
+     | SEND:      | SEND:         | SEND:        | human
+     | instr.     | DECIDE/FIX    | VERIFY       | input
+     |            |               |              |
+     +------------+---------------+--------------+
+                  |
+                  v
+             (back to RUNNING)
+
+  +----------+   +----------+
+  | COMPLETE |   | ABORTED  |   <- terminal states
+  +----------+   +----------+
+  IDLE→declare   any→SEND:ABORT
+```
 
 ## Orchestrator messages
 
