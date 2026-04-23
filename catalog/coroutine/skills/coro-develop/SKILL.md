@@ -59,6 +59,7 @@ Environment variables (set before invoking):
 - `CORO_MODEL` — Claude model slug (default: `sonnet`)
 - `CORO_PROJECT` — project root path (default: auto-discovered from cwd)
 - `CORO_ADD_DIRS` — colon-separated extra `--add-dir` paths passed to claude
+- `CORO_EFFORT` — effort level passed to claude (`low`, `medium`, `high`, `xhigh`, `max`); omit for claude's default
 
 ## Session flow
 

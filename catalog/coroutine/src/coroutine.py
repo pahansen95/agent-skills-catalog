@@ -13,6 +13,7 @@ Environment:
   CORO_MODEL      Claude model slug (default: sonnet)
   CORO_PROJECT    Project root path (default: auto-discover from cwd)
   CORO_ADD_DIRS   Colon-separated list of extra --add-dir paths for claude
+  CORO_EFFORT     Effort level passed to claude (low|medium|high|xhigh|max)
 
 Sessions stored in: <project>/.cache/sessions/
 Turn logs stored in: <project>/.cache/turns/
@@ -40,6 +41,9 @@ def _claude_flags() -> list[str]:
         "--verbose",
         "--dangerously-skip-permissions",
     ]
+    effort = os.environ.get("CORO_EFFORT", "").strip()
+    if effort:
+        flags += ["--effort", effort]
     add_dirs = os.environ.get("CORO_ADD_DIRS", "")
     for d in add_dirs.split(":"):
         d = d.strip()
@@ -447,7 +451,7 @@ def main():
         prog="coroutine",
         description="Stateful Claude session manager",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="Runtime config via env: CORO_MODEL, CORO_PROJECT, CORO_ADD_DIRS",
+        epilog="Runtime config via env: CORO_MODEL, CORO_PROJECT, CORO_ADD_DIRS, CORO_EFFORT",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
