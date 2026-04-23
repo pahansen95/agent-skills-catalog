@@ -3,11 +3,12 @@
 coroutine — stateful Claude session manager
 
 Usage:
-  coroutine create <name>     # create session; pipe content for turn 1
-  coroutine send <name>       # reads prompt from stdin
-  coroutine status <name>     # last YIELD signal
-  coroutine turns <name>      # list turns with cost summary
-  coroutine log <name> [<N>]  # raw jsonl for turn N (default: last)
+  coroutine create <name>       # create session (preamble only; stdin for turn 1 deprecated)
+  coroutine send <name>         # reads prompt from stdin
+  coroutine status <name>       # last YIELD signal
+  coroutine turns <name>        # list turns with cost summary
+  coroutine log <name> [<N>]    # raw jsonl for turn N (default: last)
+  coroutine new-phase <slug>    # scaffold .cache/TODO/phase-<slug>.md + kickoff
 
 Environment:
   CORO_MODEL      Claude model slug (default: sonnet)
@@ -331,7 +332,8 @@ def read_stdin_or_die() -> str:
 # Commands
 # ---------------------------------------------------------------------------
 
-def cmd_create(root: Path, name: str):
+def cmd_create(args, root: Path):
+    name = args.name
     if session_file(root, name).exists():
         die(f"session '{name}' already exists — delete {session_file(root, name)} to recreate")
 
@@ -357,7 +359,14 @@ def cmd_create(root: Path, name: str):
     print(f"[coroutine] {extract_yield(text) or '(acknowledged)'}", file=sys.stderr)
 
     # Turn 1 (optional): if stdin has content, send immediately
+    # Deprecated: use 'coro send <name>' for turn 1 instead.
     if not sys.stdin.isatty():
+        msg = ("warning: 'coro create <name> < file' is deprecated; "
+               "use 'coro send <name> < file' for turn 1")
+        if sys.stderr.isatty():
+            msg = f"\033[33m{msg}\033[0m"
+        print(msg, file=sys.stderr)
+
         extra = sys.stdin.read().strip()
         if extra:
             turn = next_turn_number(root, name)
@@ -374,6 +383,8 @@ def cmd_create(root: Path, name: str):
             print(f"\n[coroutine] turn={turn} cost=${cost:.4f}", file=sys.stderr)
             if signal:
                 print(f"[coroutine] {signal}", file=sys.stderr)
+            else:
+                warn_missing_yield(turn)
 
 
 def cmd_send(root: Path, name: str | None):
@@ -522,6 +533,28 @@ def cmd_list_sessions(root: Path):
         print(name)
 
 
+def cmd_new_phase(args, root: Path):
+    slug = args.slug
+    todo_dir = root / ".cache" / "TODO"
+    todo_dir.mkdir(parents=True, exist_ok=True)
+
+    spec_path = todo_dir / f"phase-{slug}.md"
+    kickoff_path = todo_dir / f"phase-{slug}-kickoff.md"
+
+    if (spec_path.exists() or kickoff_path.exists()) and not args.force:
+        die(f"phase '{slug}' files already exist; use --force to overwrite")
+
+    template_dir = Path(__file__).parent.parent / "skills" / "coro-develop" / "templates"
+    spec_template = (template_dir / "phase.md").read_text()
+    kickoff_template = (template_dir / "phase-kickoff.md").read_text()
+
+    spec_path.write_text(spec_template.replace("{slug}", slug))
+    kickoff_path.write_text(kickoff_template.replace("{slug}", slug))
+
+    print(f"created {spec_path}")
+    print(f"created {kickoff_path}")
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -539,8 +572,12 @@ def main():
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_create = sub.add_parser("create", help="Create session (preamble embedded; pipe content for turn 1)")
+    p_create = sub.add_parser("create", help="Create session (sends preamble; stdin for turn 1 is deprecated — use 'send')")
     p_create.add_argument("name")
+
+    p_new_phase = sub.add_parser("new-phase", help="Scaffold a new phase spec + kickoff from templates")
+    p_new_phase.add_argument("slug")
+    p_new_phase.add_argument("--force", action="store_true", help="Overwrite existing files")
 
     p_send = sub.add_parser("send", help="Send a message (reads from stdin)")
     p_send.add_argument("name", nargs="?", default=None)
@@ -566,7 +603,9 @@ def main():
     root = find_project_root()
 
     if args.command == "create":
-        cmd_create(root, args.name)
+        cmd_create(args, root)
+    elif args.command == "new-phase":
+        cmd_new_phase(args, root)
     elif args.command == "send":
         cmd_send(root, args.name)
     elif args.command == "status":

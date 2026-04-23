@@ -53,3 +53,7 @@ pop:
 # Show the CURRENT stack (top to bottom)
 list-sessions:
     {{ python }} {{ script }} list
+
+# Scaffold a new phase spec + kickoff from templates
+new-phase slug:
+    {{ python }} {{ script }} new-phase {{ slug }}

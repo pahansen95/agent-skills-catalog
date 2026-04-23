@@ -21,7 +21,7 @@ it to your PATH. Run `coro setup` once before first use.
 | Command | Usage | When to use |
 |---|---|---|
 | `setup` | `coro setup` | Once — creates venv, sets Python version |
-| `create` | `coro create <name>` | Start a new worker session (sends preamble; auto-pushes onto CURRENT) |
+| `create` | `coro create <name>` | Start a new worker session (sends preamble only; auto-pushes onto CURRENT) |
 | `send` | `coro send [<name>] <<< "<msg>"` | Send a message (bare form targets CURRENT top) |
 | `status` | `coro status [<name>]` | Check last YIELD signal + in-flight send state |
 | `turns` | `coro turns [<name>]` | List all turns with cost summary |
@@ -29,6 +29,7 @@ it to your PATH. Run `coro setup` once before first use.
 | `use` | `coro use <name>` | Push a session onto the CURRENT stack |
 | `pop` | `coro pop` | Pop the top of the CURRENT stack |
 | `list-sessions` | `coro list-sessions` | Show the CURRENT stack, top to bottom |
+| `new-phase` | `coro new-phase <slug>` | Scaffold `.cache/TODO/phase-<slug>.md` + kickoff from templates |
 
 **Bare-name dispatch**: `send`, `status`, `turns`, and `log` resolve to the
 top of the CURRENT stack (`.cache/sessions/CURRENT`) when no name is given.
@@ -41,7 +42,7 @@ wins and works regardless of stack state.
 concurrent `coro send <same-name>` dies immediately with a clear error.
 `coro status` reports `sending: yes` while a send is in flight.
 
-Stdin is the message for `send` and `create`. Use heredoc for multi-line:
+Stdin is the message for `send`. Use heredoc for multi-line:
 
 ```bash
 coro send phase-1 << 'EOF'
@@ -66,18 +67,20 @@ Environment variables (set before invoking):
 ### 1. Create the session
 
 `coro create <name>` sends the protocol preamble (loaded from `protocol.md`
-with `/salience on` prepended). If stdin has content, it's sent as turn 1 immediately after.
+with `/salience on` prepended). Send turn 1 separately via `coro send`:
 
 ```bash
-# Create only (preamble turn)
-coro create phase-1
-
-# Create + seed with initial context
-coro create phase-1 < .cache/TODO/phase-1.md
+coro create phase-1                                      # preamble (turn 0)
+coro send phase-1 < .cache/TODO/phase-1-kickoff.md      # turn 1
 ```
 
-Capture the session UUID from stderr output — it's stored automatically in
+Capture the session UUID from stderr — stored automatically in
 `.cache/sessions/<name>.uuid`.
+
+**Deprecated**: `coro create <name> < file` (preamble + turn 1 in one
+invocation) still works but emits a deprecation warning to stderr. Migrate
+callers to the two-step form; the inline-send path will be removed in a
+future iteration.
 
 ### 2. Orient the worker
 
@@ -181,6 +184,13 @@ When driving a coroutine via recurring checks (cron, loop skill, etc.):
 
 The skill reports state; it does not enforce polling cadence. The discipline
 is yours to apply.
+
+### Scaffolding new phases
+
+`coro new-phase <slug>` creates `.cache/TODO/phase-<slug>.md` and
+`.cache/TODO/phase-<slug>-kickoff.md` from the shipped templates. Fill in
+the placeholder sections, then proceed with `coro create` + `coro send`.
+Use `--force` to overwrite existing files.
 
 ### 6. Integration tests
 
