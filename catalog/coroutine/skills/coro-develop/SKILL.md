@@ -21,11 +21,25 @@ it to your PATH. Run `coro setup` once before first use.
 | Command | Usage | When to use |
 |---|---|---|
 | `setup` | `coro setup` | Once — creates venv, sets Python version |
-| `create` | `coro create <name>` | Start a new worker session (sends preamble) |
-| `send` | `coro send <name> <<< "<msg>"` | Send a message to an existing session |
-| `status` | `coro status <name>` | Check the last YIELD signal |
-| `turns` | `coro turns <name>` | List all turns with cost summary |
-| `log` | `coro log <name> [turn]` | Inspect raw stream-json for a turn |
+| `create` | `coro create <name>` | Start a new worker session (sends preamble; auto-pushes onto CURRENT) |
+| `send` | `coro send [<name>] <<< "<msg>"` | Send a message (bare form targets CURRENT top) |
+| `status` | `coro status [<name>]` | Check last YIELD signal + in-flight send state |
+| `turns` | `coro turns [<name>]` | List all turns with cost summary |
+| `log` | `coro log [<name>] [turn]` | Inspect raw stream-json for a turn |
+| `use` | `coro use <name>` | Push a session onto the CURRENT stack |
+| `pop` | `coro pop` | Pop the top of the CURRENT stack |
+| `list-sessions` | `coro list-sessions` | Show the CURRENT stack, top to bottom |
+
+**Bare-name dispatch**: `send`, `status`, `turns`, and `log` resolve to the
+top of the CURRENT stack (`.cache/sessions/CURRENT`) when no name is given.
+`coro create <name>` auto-pushes; `coro use <name>` pushes an existing
+session; `coro pop` returns to the previous one. Explicit `<name>` always
+wins and works regardless of stack state.
+
+**Concurrency**: `coro send` holds an exclusive file lock
+(`.cache/sessions/<name>.lock`) for the duration of the call. A second
+concurrent `coro send <same-name>` dies immediately with a clear error.
+`coro status` reports `sending: yes` while a send is in flight.
 
 Stdin is the message for `send` and `create`. Use heredoc for multi-line:
 
