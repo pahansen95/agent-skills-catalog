@@ -30,6 +30,8 @@ it to your PATH. Run `coro setup` once before first use.
 | `pop` | `coro pop` | Pop the top of the CURRENT stack |
 | `list-sessions` | `coro list-sessions` | Show the CURRENT stack, top to bottom |
 | `new-phase` | `coro new-phase <slug>` | Scaffold `.cache/TODO/phase-<slug>.md` + kickoff from templates |
+| `hold` | `coro hold [<name>] [<reason>]` | Mark session as awaiting human input; writes `.cache/sessions/<name>.hold` |
+| `unhold` | `coro unhold [<name>]` | Clear hold sentinel on session |
 
 **Bare-name dispatch**: `send`, `status`, `turns`, and `log` resolve to the
 top of the CURRENT stack (`.cache/sessions/CURRENT`) when no name is given.
@@ -142,11 +144,10 @@ coro send phase-N <<< "BEGIN"
 After each YIELD, decide:
 
 - `DONE` → send next instruction or declare phase complete
-- `BLOCKED` → read summary, resolve, send `DECIDE: <answer>`
+- `BLOCKED` → read summary, resolve, send `DECIDE: <answer>`; if human input needed: `coro hold <name> '<reason>'` and stop polling
 - `FAILED` → diagnose, send `FIX: <description>`
 - `RUNNING` → send `CONTINUE`
 - `CHECK` → inspect the artifact, send `VERIFY: <result>`
-- `USER_HOLD` → stop driving; wait for explicit human input
 
 ### Multi-commit phase discipline
 
@@ -171,16 +172,16 @@ pre-BEGIN.
 
 When driving a coroutine via recurring checks (cron, loop skill, etc.):
 
-- If the last YIELD is `USER_HOLD`, **skip the tick entirely**. No
-  `coro status`, no log read, no turn. The human will un-hold explicitly by
-  sending the next message themselves.
+- If `coro status` reports `hold: yes`, **skip the tick entirely**. No log
+  read, no turn. Resume by sending the next message (`coro send` auto-clears
+  the hold sentinel).
 - If the last YIELD is `BLOCKED` with a summary the orchestrator can resolve
   (e.g., "need decision on X" where X is a local/technical call), read the
   turn and send `DECIDE:`.
 - If the last YIELD is `BLOCKED` with a summary requiring human input
-  (credentials, design decision, infrastructure access), transition the
-  session to `USER_HOLD` — either by sending a message that instructs the
-  worker to hold, or by stopping polling and reporting to the human directly.
+  (credentials, design decision, infrastructure access), run
+  `coro hold <name> '<reason>'` and stop polling. Report the blockage to the
+  human. Resume is always explicit: `coro send <name>` auto-clears the hold.
 
 The skill reports state; it does not enforce polling cadence. The discipline
 is yours to apply.
