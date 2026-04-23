@@ -19,11 +19,13 @@ Turn logs stored in: <project>/.cache/turns/
 """
 
 import argparse
+import fcntl
 import json
 import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import IO
 
 # ---------------------------------------------------------------------------
 # Config — loaded from environment, no CLI overrides
@@ -96,6 +98,77 @@ def session_file(root: Path, name: str) -> Path:
 def meta_file(root: Path, name: str) -> Path:
     return sessions_dir(root) / f"{name}.meta"
 
+def send_lock_path(root: Path, name: str) -> Path:
+    return sessions_dir(root) / f"{name}.lock"
+
+def acquire_send_lock(root: Path, name: str) -> IO:
+    path = send_lock_path(root, name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch(exist_ok=True)
+    fh = path.open("w")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fh
+    except BlockingIOError:
+        fh.close()
+        die(f"another send is in flight for session '{name}'")
+
+def check_send_lock(root: Path, name: str) -> bool:
+    path = send_lock_path(root, name)
+    if not path.exists():
+        return False
+    fh = path.open("r")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    finally:
+        fh.close()
+    return False
+
+def current_stack_path(root: Path) -> Path:
+    return sessions_dir(root) / "CURRENT"
+
+def current_top(root: Path) -> str | None:
+    p = current_stack_path(root)
+    if not p.exists():
+        return None
+    lines = [l for l in p.read_text().splitlines() if l.strip()]
+    return lines[-1] if lines else None
+
+def current_push(root: Path, name: str) -> None:
+    p = current_stack_path(root)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    existing = p.read_text().splitlines() if p.exists() else []
+    existing = [l for l in existing if l.strip()]
+    existing.append(name)
+    p.write_text("\n".join(existing) + "\n")
+
+def current_pop(root: Path) -> str | None:
+    p = current_stack_path(root)
+    if not p.exists():
+        return None
+    existing = [l for l in p.read_text().splitlines() if l.strip()]
+    if not existing:
+        return None
+    top = existing.pop()
+    p.write_text("\n".join(existing) + ("\n" if existing else ""))
+    return top
+
+def current_list(root: Path) -> list[str]:
+    p = current_stack_path(root)
+    if not p.exists():
+        return []
+    return [l for l in p.read_text().splitlines() if l.strip()]
+
+def resolve_name(root: Path, name: str | None) -> str:
+    if name is not None:
+        return name
+    top = current_top(root)
+    if top is None:
+        die("no session specified and CURRENT stack is empty; run 'coro use <name>' first")
+    return top
+
 def load_session(root: Path, name: str) -> str:
     path = session_file(root, name)
     if not path.exists():
@@ -140,11 +213,11 @@ def make_payload(content: str) -> str:
         "message": {"role": "user", "content": content}
     })
 
-def run_claude(payload: str, model: str, resume_uuid: str | None = None) -> list[dict]:
+def run_claude(root: Path, payload: str, model: str, resume_uuid: str | None = None) -> list[dict]:
     cmd = ["claude", "--print", "--model", model] + _claude_flags()
     if resume_uuid:
         cmd += ["--resume", resume_uuid]
-    proc = subprocess.run(cmd, input=payload.encode(), capture_output=True)
+    proc = subprocess.run(cmd, input=payload.encode(), capture_output=True, cwd=root)
     events = []
     for line in proc.stdout.decode().splitlines():
         line = line.strip()
@@ -219,7 +292,7 @@ def cmd_create(root: Path, name: str):
 
     turn = next_turn_number(root, name)
     print(f"[coroutine] creating session '{name}' (model={model})...", file=sys.stderr)
-    events = run_claude(make_payload(preamble), model)
+    events = run_claude(root, make_payload(preamble), model)
 
     uuid = extract_session_id(events)
     if not uuid:
@@ -227,6 +300,7 @@ def cmd_create(root: Path, name: str):
 
     save_session(root, name, uuid, model)
     save_turn(root, name, turn, events)
+    current_push(root, name)
 
     text = extract_text(events)
     result = extract_result(events)
@@ -240,7 +314,7 @@ def cmd_create(root: Path, name: str):
         if extra:
             turn = next_turn_number(root, name)
             print(f"[coroutine] sending initial content turn={turn}...", file=sys.stderr)
-            events = run_claude(make_payload(extra), model, resume_uuid=uuid)
+            events = run_claude(root, make_payload(extra), model, resume_uuid=uuid)
             save_turn(root, name, turn, events)
 
             text = extract_text(events)
@@ -254,32 +328,41 @@ def cmd_create(root: Path, name: str):
                 print(f"[coroutine] {signal}", file=sys.stderr)
 
 
-def cmd_send(root: Path, name: str):
+def cmd_send(root: Path, name: str | None):
+    name = resolve_name(root, name)
     uuid = load_session(root, name)
     meta = load_meta(root, name)
     model = meta.get("model", _model())
 
     content = read_stdin_or_die()
-    turn = next_turn_number(root, name)
 
-    print(f"[coroutine] resuming '{name}' turn={turn} model={model}...", file=sys.stderr)
-    events = run_claude(make_payload(content), model, resume_uuid=uuid)
-    save_turn(root, name, turn, events)
+    lock_fh = acquire_send_lock(root, name)
+    try:
+        turn = next_turn_number(root, name)
 
-    text = extract_text(events)
-    result = extract_result(events)
-    signal = extract_yield(text)
+        print(f"[coroutine] resuming '{name}' turn={turn} model={model}...", file=sys.stderr)
+        events = run_claude(root, make_payload(content), model, resume_uuid=uuid)
+        save_turn(root, name, turn, events)
 
-    print(text)
-    cost = result["total_cost_usd"] if result else 0
-    print(f"\n[coroutine] turn={turn} cost=${cost:.4f}", file=sys.stderr)
-    if signal:
-        print(f"[coroutine] {signal}", file=sys.stderr)
-    else:
-        warn_missing_yield(turn)
+        text = extract_text(events)
+        result = extract_result(events)
+        signal = extract_yield(text)
+
+        print(text)
+        cost = result["total_cost_usd"] if result else 0
+        print(f"\n[coroutine] turn={turn} cost=${cost:.4f}", file=sys.stderr)
+        if signal:
+            print(f"[coroutine] {signal}", file=sys.stderr)
+        else:
+            warn_missing_yield(turn)
+    finally:
+        lock_fh.close()
 
 
-def cmd_status(root: Path, name: str):
+def cmd_status(root: Path, name: str | None):
+    name = resolve_name(root, name)
+    held = check_send_lock(root, name)
+    print(f"sending: {'yes' if held else 'no'}")
     turn = last_turn_number(root, name)
     if turn < 0:
         die(f"no turns found for session '{name}'")
@@ -295,7 +378,8 @@ def cmd_status(root: Path, name: str):
         warn_missing_yield(turn)
 
 
-def cmd_turns(root: Path, name: str):
+def cmd_turns(root: Path, name: str | None):
+    name = resolve_name(root, name)
     logs = sorted(turns_dir(root).glob(f"{name}-*.jsonl"))
     if not logs:
         die(f"no turns found for session '{name}'")
@@ -315,7 +399,8 @@ def cmd_turns(root: Path, name: str):
         print(f"  turn {turn:03d}  cost={cost}  {summary}")
 
 
-def cmd_log(root: Path, name: str, turn: int | None):
+def cmd_log(root: Path, name: str | None, turn: int | None):
+    name = resolve_name(root, name)
     if turn is None:
         turn = last_turn_number(root, name)
         if turn < 0:
@@ -324,6 +409,29 @@ def cmd_log(root: Path, name: str, turn: int | None):
     if not path.exists():
         die(f"no log for turn {turn} of session '{name}'")
     print(path.read_text(), end="")
+
+
+def cmd_use(root: Path, name: str):
+    if not session_file(root, name).exists():
+        die(f"no session '{name}' — run: coro create {name}")
+    current_push(root, name)
+    print(f"pushed '{name}'", file=sys.stderr)
+
+
+def cmd_pop(root: Path):
+    top = current_pop(root)
+    if top is None:
+        die("CURRENT stack is empty")
+    print(top)
+
+
+def cmd_list_sessions(root: Path):
+    stack = current_list(root)
+    if not stack:
+        print("(empty)")
+        return
+    for name in reversed(stack):
+        print(name)
 
 
 # ---------------------------------------------------------------------------
@@ -347,17 +455,24 @@ def main():
     p_create.add_argument("name")
 
     p_send = sub.add_parser("send", help="Send a message (reads from stdin)")
-    p_send.add_argument("name")
+    p_send.add_argument("name", nargs="?", default=None)
 
     p_status = sub.add_parser("status", help="Show last YIELD signal")
-    p_status.add_argument("name")
+    p_status.add_argument("name", nargs="?", default=None)
 
     p_turns = sub.add_parser("turns", help="List all turns with cost summary")
-    p_turns.add_argument("name")
+    p_turns.add_argument("name", nargs="?", default=None)
 
     p_log = sub.add_parser("log", help="Print raw jsonl for a turn (default: last)")
-    p_log.add_argument("name")
+    p_log.add_argument("name", nargs="?", default=None)
     p_log.add_argument("turn", nargs="?", type=int, default=None)
+
+    p_use = sub.add_parser("use", help="Push a session onto the CURRENT stack")
+    p_use.add_argument("name")
+
+    sub.add_parser("pop", help="Pop the top of the CURRENT stack")
+
+    sub.add_parser("list", help="Show the CURRENT stack, top to bottom")
 
     args = parser.parse_args()
     root = find_project_root()
@@ -372,6 +487,12 @@ def main():
         cmd_turns(root, args.name)
     elif args.command == "log":
         cmd_log(root, args.name, args.turn)
+    elif args.command == "use":
+        cmd_use(root, args.name)
+    elif args.command == "pop":
+        cmd_pop(root)
+    elif args.command == "list":
+        cmd_list_sessions(root)
 
 
 if __name__ == "__main__":

@@ -41,3 +41,15 @@ turns name:
 # Print raw jsonl for a turn (default: last turn)
 log name turn="":
     {{ python }} {{ script }} log {{ name }} {{ turn }}
+
+# Push a session onto the CURRENT stack
+use name:
+    {{ python }} {{ script }} use {{ name }}
+
+# Pop the top session from the CURRENT stack
+pop:
+    {{ python }} {{ script }} pop
+
+# Show the CURRENT stack (top to bottom)
+list-sessions:
+    {{ python }} {{ script }} list
