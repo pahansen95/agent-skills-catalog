@@ -28,6 +28,7 @@ YIELD: <STATUS> | <summary>
 | `FAILED` | Something broke — details in summary | Read error, send `FIX: <description>` or escalate |
 | `RUNNING` | Work in progress, will continue | Send `CONTINUE` |
 | `CHECK` | Asks orchestrator to verify an artifact | Inspect, send `VERIFY: <result>` |
+| `USER_HOLD` | Paused pending a human decision | Orchestrator STOPS polling; resumes only on explicit human input |
 
 ### Examples
 
@@ -37,7 +38,29 @@ YIELD: BLOCKED | need decision: 1K or 4K block size for ext4?
 YIELD: FAILED | crc32c mismatch on superblock — computed 0x1234 expected 0x5678
 YIELD: RUNNING | implementing block group descriptor table, ~50% complete
 YIELD: CHECK | please verify loop device mounts correctly at /mnt/test
+YIELD: USER_HOLD | paused: production deploy requires human approval
 ```
+
+### `USER_HOLD` — pausing for a human
+
+`USER_HOLD` signals that the session cannot progress until a human provides
+input. Two paths reach it:
+
+- **Orchestrator-initiated.** The orchestrator decides the current state
+  requires human judgment (credentials, design call, infrastructure access,
+  scope change) and instructs the worker to hold — or the orchestrator simply
+  stops driving and marks the session as held.
+- **Worker-initiated.** The worker determines that only a human can resolve
+  the current decision (ethical gate, business policy, access it cannot
+  obtain) and self-emits `USER_HOLD` instead of `BLOCKED`.
+
+While a session is in `USER_HOLD`, the orchestrator **idles the polling
+loop** — no `coro status`, no re-checks, no automated turns. Time and cost
+are not consumed by speculative polling.
+
+Resume is always explicit and human-driven: the human sends a normal
+`DECIDE: <answer>` (or other appropriate message) via `coro send`. The next
+YIELD returns the session to its ordinary lifecycle.
 
 ## Orchestrator messages
 
@@ -72,11 +95,12 @@ output = send(session, message)
 signal = parse_yield(output)   # last line: "YIELD: STATUS | summary"
 
 match signal.status:
-  DONE    → send next instruction OR declare phase complete
-  BLOCKED → formulate decision → send "DECIDE: <answer>"
-  FAILED  → diagnose → send "FIX: <description>" OR escalate to human
-  RUNNING → send "CONTINUE"
-  CHECK   → inspect artifact → send "VERIFY: <result>"
+  DONE      → send next instruction OR declare phase complete
+  BLOCKED   → formulate decision → send "DECIDE: <answer>"
+  FAILED    → diagnose → send "FIX: <description>" OR escalate to human
+  RUNNING   → send "CONTINUE"
+  CHECK     → inspect artifact → send "VERIFY: <result>"
+  USER_HOLD → STOP polling; resume only on explicit human input
 ```
 
 Human escalation: surface to the human when BLOCKED on questions requiring
