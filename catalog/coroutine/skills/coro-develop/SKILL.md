@@ -128,6 +128,25 @@ After each YIELD, decide:
 - `FAILED` → diagnose, send `FIX: <description>`
 - `RUNNING` → send `CONTINUE`
 - `CHECK` → inspect the artifact, send `VERIFY: <result>`
+- `USER_HOLD` → stop driving; wait for explicit human input
+
+### Polling discipline
+
+When driving a coroutine via recurring checks (cron, loop skill, etc.):
+
+- If the last YIELD is `USER_HOLD`, **skip the tick entirely**. No
+  `coro status`, no log read, no turn. The human will un-hold explicitly by
+  sending the next message themselves.
+- If the last YIELD is `BLOCKED` with a summary the orchestrator can resolve
+  (e.g., "need decision on X" where X is a local/technical call), read the
+  turn and send `DECIDE:`.
+- If the last YIELD is `BLOCKED` with a summary requiring human input
+  (credentials, design decision, infrastructure access), transition the
+  session to `USER_HOLD` — either by sending a message that instructs the
+  worker to hold, or by stopping polling and reporting to the human directly.
+
+The skill reports state; it does not enforce polling cadence. The discipline
+is yours to apply.
 
 ### 6. Integration tests
 

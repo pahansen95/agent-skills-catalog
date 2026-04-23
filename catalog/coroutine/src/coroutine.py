@@ -178,6 +178,12 @@ def extract_yield(text: str) -> str | None:
             return line
     return None
 
+def warn_missing_yield(turn: int) -> None:
+    msg = f"warning: turn {turn} has no YIELD line; protocol violation"
+    if sys.stderr.isatty():
+        msg = f"\033[33m{msg}\033[0m"
+    print(msg, file=sys.stderr)
+
 def extract_result(events: list[dict]) -> dict | None:
     for e in events:
         if e.get("type") == "result":
@@ -269,6 +275,8 @@ def cmd_send(root: Path, name: str):
     print(f"\n[coroutine] turn={turn} cost=${cost:.4f}", file=sys.stderr)
     if signal:
         print(f"[coroutine] {signal}", file=sys.stderr)
+    else:
+        warn_missing_yield(turn)
 
 
 def cmd_status(root: Path, name: str):
@@ -284,6 +292,7 @@ def cmd_status(root: Path, name: str):
     else:
         last_line = text.strip().splitlines()[-1] if text.strip() else "(no output)"
         print(f"(no YIELD signal in turn {turn}) last: {last_line}")
+        warn_missing_yield(turn)
 
 
 def cmd_turns(root: Path, name: str):
