@@ -61,6 +61,31 @@ def _load_preamble() -> str:
 def _model() -> str:
     return os.environ.get("CORO_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
 
+MODEL_CONTEXT = {
+    "opus": 1_000_000,
+    "sonnet": 200_000,
+    "haiku": 200_000,
+}
+
+def model_context(model: str) -> int:
+    for slug, ctx in MODEL_CONTEXT.items():
+        if slug in model:
+            return ctx
+    print(f"note: unknown model '{model}', assuming 200k context window", file=sys.stderr)
+    return 200_000
+
+def token_warn_threshold(model: str, ctx_window: int | None = None) -> int:
+    abs_override = os.environ.get("CORO_TOKEN_WARN", "").strip()
+    if abs_override:
+        return int(abs_override)
+    ratio = float(os.environ.get("CORO_TOKEN_WARN_RATIO", "0.80"))
+    if ctx_window is None:
+        ctx_window = model_context(model)
+    return int(ctx_window * ratio)
+
+def cost_warn_threshold() -> float:
+    return float(os.environ.get("CORO_COST_WARN", "25.00"))
+
 def _project_override() -> str | None:
     return os.environ.get("CORO_PROJECT", "").strip() or None
 
@@ -267,6 +292,25 @@ def extract_result(events: list[dict]) -> dict | None:
             return e
     return None
 
+def result_tokens(result: dict) -> tuple[int, int, int, int]:
+    """Returns (input, cache_read, cache_creation, output). Sum of first three = total context tokens."""
+    u = result.get("usage", {})
+    return (
+        u.get("input_tokens", 0),
+        u.get("cache_read_input_tokens", 0),
+        u.get("cache_creation_input_tokens", 0),
+        u.get("output_tokens", 0),
+    )
+
+def session_total_cost(root: Path, name: str) -> float:
+    total = 0.0
+    for path in sorted(turns_dir(root).glob(f"{name}-*.jsonl")):
+        events = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+        r = extract_result(events)
+        if r:
+            total += r.get("total_cost_usd", 0.0)
+    return total
+
 def save_turn(root: Path, name: str, turn: int, events: list[dict]):
     turns_dir(root).mkdir(parents=True, exist_ok=True)
     path = turn_log_file(root, name, turn)
@@ -365,21 +409,59 @@ def cmd_send(root: Path, name: str | None):
 
 def cmd_status(root: Path, name: str | None):
     name = resolve_name(root, name)
+    meta = load_meta(root, name)
+    model = os.environ.get("CORO_MODEL", "").strip() or meta.get("model", DEFAULT_MODEL)
     held = check_send_lock(root, name)
-    print(f"sending: {'yes' if held else 'no'}")
     turn = last_turn_number(root, name)
     if turn < 0:
         die(f"no turns found for session '{name}'")
     path = turn_log_file(root, name, turn)
     events = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
     text = extract_text(events)
+    result = extract_result(events)
     signal = extract_yield(text)
+
+    if result:
+        inp, cr, cc, out = result_tokens(result)
+        total_ctx = inp + cr + cc
+        tokens_str = f"{total_ctx} in / {out} out  (last turn)"
+    else:
+        tokens_str = "-"
+
+    total_cost = session_total_cost(root, name)
+
     if signal:
-        print(signal)
+        yield_str = signal
     else:
         last_line = text.strip().splitlines()[-1] if text.strip() else "(no output)"
-        print(f"(no YIELD signal in turn {turn}) last: {last_line}")
+        yield_str = f"(no YIELD signal in turn {turn}) last: {last_line}"
+
+    W = 10  # label column width
+    print(f"{'session:':{W}}{name}")
+    print(f"{'sending:':{W}}{'yes' if held else 'no'}")
+    print(f"{'tokens:':{W}}{tokens_str}")
+    print(f"{'cost:':{W}}${total_cost:.4f} total")
+    print(f"{'yield:':{W}}{yield_str}")
+
+    if not signal:
         warn_missing_yield(turn)
+
+    if result:
+        ctx_window = model_context(model)
+        warn_threshold = token_warn_threshold(model, ctx_window)
+        if total_ctx > warn_threshold:
+            pct = int(total_ctx / ctx_window * 100)
+            msg = f"warning: last turn used {total_ctx} input tokens — {pct}% of {model} context ({ctx_window})"
+            if sys.stderr.isatty():
+                msg = f"\033[33m{msg}\033[0m"
+            print(msg, file=sys.stderr)
+
+    cost_threshold = cost_warn_threshold()
+    if total_cost > cost_threshold:
+        msg = f"warning: session cost ${total_cost:.2f} exceeds threshold ${cost_threshold:.2f}"
+        if sys.stderr.isatty():
+            msg = f"\033[33m{msg}\033[0m"
+        print(msg, file=sys.stderr)
 
 
 def cmd_turns(root: Path, name: str | None):
@@ -401,6 +483,8 @@ def cmd_turns(root: Path, name: str | None):
         else:
             summary = extract_yield(text) or f"(no yield) {text.strip().splitlines()[-1][:60] if text.strip() else ''}"
         print(f"  turn {turn:03d}  cost={cost}  {summary}")
+    total = session_total_cost(root, name)
+    print(f"  total        ${total:.4f}")
 
 
 def cmd_log(root: Path, name: str | None, turn: int | None):

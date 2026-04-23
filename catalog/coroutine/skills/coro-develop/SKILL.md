@@ -145,6 +145,25 @@ After each YIELD, decide:
 - `CHECK` → inspect the artifact, send `VERIFY: <result>`
 - `USER_HOLD` → stop driving; wait for explicit human input
 
+### Multi-commit phase discipline
+
+When a phase will produce more than one logical commit, the worker MUST emit
+`YIELD: CHECK | <commit summary>` after each commit. The orchestrator inspects
+the diff and replies `VERIFY: ok` (or `VERIFY: <issue>`) before the worker
+proceeds to the next commit.
+
+Why: combining multiple commits in a single turn inflates context and cost
+(Phase E of the Views refactor cost $24 in one turn for exactly this reason).
+Per-commit checkpoints keep turn cost predictable and make scope creep visible
+immediately.
+
+Single-commit phases (most protocol additions, doc-only changes) need not
+checkpoint — the final `YIELD: DONE` is the checkpoint.
+
+The orchestrator should require a commit-count estimate during architecture
+review and use it to decide whether to enforce per-commit CHECK gates
+pre-BEGIN.
+
 ### Polling discipline
 
 When driving a coroutine via recurring checks (cron, loop skill, etc.):
@@ -211,3 +230,34 @@ After each turn, report:
 - Session total across all phases
 
 Use `coro turns <name>` for a full cost breakdown per turn.
+
+### Telemetry & thresholds
+
+`coro status` reports per-session telemetry:
+
+- `tokens:` — total context tokens consumed in the most recent turn (sum of
+  `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`).
+  Watch this number; nearing the model's context window means exhaustion is
+  imminent and the worker should be rolled over.
+- `cost:` — cumulative cost across all turns in the session.
+
+Warnings fire to stderr when:
+- Last-turn total context tokens exceed 80% of the model's context window
+  (override: `CORO_TOKEN_WARN_RATIO` for fraction, or `CORO_TOKEN_WARN` for
+  absolute count).
+- Cumulative cost exceeds `CORO_COST_WARN` (default $25.00).
+
+Model context windows are looked up by `CORO_MODEL` slug:
+opus = 1M tokens, sonnet = 200k, haiku = 200k. Unknown models fall back to
+200k with a one-line note.
+
+The thresholds are advisory — the orchestrator decides whether to checkpoint,
+rollover, or proceed.
+
+When the token warning fires, consider:
+- Sending a `YIELD: CHECK` before the next implementation turn.
+- Spawning a fresh session and seeding it with a compressed handoff.
+
+When the cost warning fires, consider:
+- Reviewing recent turns via `coro turns <name>` for runaway cost.
+- Pausing to re-plan if remaining work doesn't justify the spend.
