@@ -46,12 +46,97 @@ import subprocess
 import sys
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
-from typing import IO
+from typing import IO, Protocol
+
+
+# ---------------------------------------------------------------------------
+# Errors & process-runner seam
+#
+# CoroError: raised by logic functions to signal an operator-facing failure.
+# CLI entry point catches it and exits 1. Keeps die()-style semantics out of
+# testable code paths.
+#
+# ProcessRunner: the seam for subprocess invocation. Prod impl wraps Popen;
+# tests inject a scripted runner that yields canned stream-json events.
+# ---------------------------------------------------------------------------
+
+
+class CoroError(Exception):
+    """Operator-facing failure. CLI prints msg to stderr and exits 1."""
+
+
+class ProcessRunner(Protocol):
+    """Protocol for spawning `claude` and iterating its stream-json output."""
+
+    def run_stream_json(
+        self,
+        argv: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        stdin_payload: str,
+    ) -> Iterator[dict]:
+        """Spawn argv, write stdin_payload, yield parsed JSON events as they arrive.
+
+        Implementations control process lifecycle, streaming cadence, and
+        encoding. Non-JSON lines are skipped. Implementations must report
+        non-zero exits via stderr to the caller's logger (the prod impl calls
+        _warn; tests may choose differently).
+        """
+        ...
+
+
+class SubprocessRunner:
+    """Production ProcessRunner: real Popen, line-buffered utf-8 read loop."""
+
+    def run_stream_json(
+        self,
+        argv: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        stdin_payload: str,
+    ) -> Iterator[dict]:
+        proc = subprocess.Popen(
+            argv,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=cwd,
+            env=env,
+            text=True,
+            encoding="utf-8",
+        )
+        assert proc.stdin is not None and proc.stdout is not None
+        proc.stdin.write(stdin_payload)
+        proc.stdin.close()
+
+        try:
+            for line in proc.stdout:
+                line = line.rstrip()
+                if not line:
+                    continue
+                try:
+                    yield json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+        finally:
+            proc.wait()
+            if proc.returncode != 0 and proc.stderr is not None:
+                err = proc.stderr.read()
+                if err.strip():
+                    _warn(f"claude exited with code {proc.returncode}: {err.strip()[:500]}")
+
+
+# Module-level default runner. Tests override by passing a scripted runner to
+# run_claude directly.
+_default_runner: ProcessRunner = SubprocessRunner()
+
 
 # ---------------------------------------------------------------------------
 # Model registry
@@ -344,9 +429,14 @@ def current_stack_path(root: Path) -> Path:
     return coro_dir(root) / "CURRENT"
 
 
-def make_slug(name: str) -> str:
-    """Generate a fresh slug for `name` at the current unix time."""
-    return f"{name}_{int(time.time())}"
+def make_slug(name: str, time_fn: Callable[[], float] = time.time) -> str:
+    """Generate a fresh slug for `name` at the current wall-clock unix time.
+
+    time_fn is injectable for tests; default reads the real clock. Note: must
+    return wall-clock seconds, not perf_counter/monotonic (slugs need to be
+    meaningful across process runs).
+    """
+    return f"{name}_{int(time_fn())}"
 
 
 def parse_slug(slug: str) -> tuple[str, int] | None:
@@ -564,6 +654,27 @@ def _max_budget_usd() -> str | None:
     return v or None
 
 
+def build_claude_argv(
+    resolved: ResolvedModel,
+    *,
+    session_id: str | None,
+    resume_uuid: str | None,
+    max_budget_usd: str | None,
+) -> list[str]:
+    """Pure: assemble the `claude` argv for a turn. Testable in isolation."""
+    if (session_id is None) == (resume_uuid is None):
+        raise CoroError("build_claude_argv requires exactly one of session_id or resume_uuid")
+
+    argv = ["claude", "--print", "--model", resolved.claude_arg] + _claude_flags(resolved)
+    if session_id:
+        argv += ["--session-id", session_id]
+    else:
+        argv += ["--resume", resume_uuid]
+    if max_budget_usd:
+        argv += ["--max-budget-usd", max_budget_usd]
+    return argv
+
+
 def run_claude(
     root: Path,
     payload: str,
@@ -572,64 +683,36 @@ def run_claude(
     session_id: str | None = None,
     resume_uuid: str | None = None,
     on_event: Callable[[dict], None] | None = None,
+    runner: ProcessRunner | None = None,
 ) -> list[dict]:
-    """Invoke `claude --print` with stream-json I/O. Events are streamed line-by-line.
+    """Invoke claude for one turn via the supplied ProcessRunner (prod default).
 
-    Exactly one of session_id (create) or resume_uuid (resume) must be provided —
+    Exactly one of session_id (create) or resume_uuid (resume) must be given —
     they are mutually exclusive at the claude CLI level.
 
-    on_event is called for each parsed JSON event as it arrives. Use it to
+    on_event is called for each parsed event as it arrives. Use it to
     progressively write the turn jsonl, print assistant text, etc.
+
+    Returns the accumulated list of events.
     """
-    if (session_id is None) == (resume_uuid is None):
-        die("run_claude requires exactly one of session_id or resume_uuid")
-
-    cmd = ["claude", "--print", "--model", resolved.claude_arg] + _claude_flags(resolved)
-    if session_id:
-        cmd += ["--session-id", session_id]
-    else:
-        cmd += ["--resume", resume_uuid]
-
-    budget = _max_budget_usd()
-    if budget:
-        cmd += ["--max-budget-usd", budget]
-
-    proc = subprocess.Popen(
-        cmd,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        cwd=root,
-        env=_subprocess_env(),
-        text=True,
-        encoding="utf-8",
+    argv = build_claude_argv(
+        resolved,
+        session_id=session_id,
+        resume_uuid=resume_uuid,
+        max_budget_usd=_max_budget_usd(),
     )
-    assert proc.stdin is not None and proc.stdout is not None
-    proc.stdin.write(payload)
-    proc.stdin.close()
 
+    r = runner if runner is not None else _default_runner
     events: list[dict] = []
-    for line in proc.stdout:
-        line = line.rstrip()
-        if not line:
-            continue
-        try:
-            e = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+    for e in r.run_stream_json(
+        argv, cwd=root, env=_subprocess_env(), stdin_payload=payload
+    ):
         events.append(e)
         if on_event is not None:
             try:
                 on_event(e)
             except Exception as ex:                              # don't let a callback break the read loop
                 _warn(f"on_event callback raised: {ex}")
-    proc.wait()
-
-    if proc.returncode != 0:
-        err = proc.stderr.read() if proc.stderr else ""
-        if err.strip():
-            _warn(f"claude exited with code {proc.returncode}: {err.strip()[:500]}")
-
     return events
 
 def extract_session_id(events: list[dict]) -> str | None:
@@ -1120,9 +1203,15 @@ def cmd_unhold(args, root: Path) -> int:
 # CLI
 # ---------------------------------------------------------------------------
 
-def die(msg: str):
-    print(f"error: {msg}", file=sys.stderr)
-    sys.exit(1)
+def die(msg: str) -> None:
+    """Raise an operator-facing error.
+
+    Implemented via CoroError so logic functions can be exercised from tests
+    without triggering SystemExit. The CLI entry point catches CoroError and
+    exits 1.
+    """
+    raise CoroError(msg)
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -1180,30 +1269,35 @@ def main():
     p_unhold.add_argument("name", nargs="?", default=None)
 
     args = parser.parse_args()
-    root = find_project_root()
 
-    if args.command == "create":
-        cmd_create(args, root)
-    elif args.command == "new-phase":
-        cmd_new_phase(args, root)
-    elif args.command == "send":
-        cmd_send(root, args.name)
-    elif args.command == "status":
-        cmd_status(root, args.name)
-    elif args.command == "turns":
-        cmd_turns(root, args.name)
-    elif args.command == "log":
-        cmd_log(root, args.name, args.turn)
-    elif args.command == "use":
-        cmd_use(root, args.name)
-    elif args.command == "pop":
-        cmd_pop(root)
-    elif args.command == "list":
-        cmd_list_sessions(root)
-    elif args.command == "hold":
-        sys.exit(cmd_hold(args, root))
-    elif args.command == "unhold":
-        sys.exit(cmd_unhold(args, root))
+    try:
+        root = find_project_root()
+
+        if args.command == "create":
+            cmd_create(args, root)
+        elif args.command == "new-phase":
+            cmd_new_phase(args, root)
+        elif args.command == "send":
+            cmd_send(root, args.name)
+        elif args.command == "status":
+            cmd_status(root, args.name)
+        elif args.command == "turns":
+            cmd_turns(root, args.name)
+        elif args.command == "log":
+            cmd_log(root, args.name, args.turn)
+        elif args.command == "use":
+            cmd_use(root, args.name)
+        elif args.command == "pop":
+            cmd_pop(root)
+        elif args.command == "list":
+            cmd_list_sessions(root)
+        elif args.command == "hold":
+            sys.exit(cmd_hold(args, root))
+        elif args.command == "unhold":
+            sys.exit(cmd_unhold(args, root))
+    except CoroError as e:
+        print(f"error: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
