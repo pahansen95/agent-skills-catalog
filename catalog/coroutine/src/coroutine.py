@@ -11,10 +11,16 @@ Usage:
   coroutine new-phase <slug>    # scaffold .cache/TODO/phase-<slug>.md + kickoff
 
 Environment:
-  CORO_MODEL      Claude model slug (default: sonnet)
+  CORO_MODEL      Claude model: alias (opus|sonnet|haiku|best), canonical id
+                  (claude-opus-4-7), or either with [1m] suffix. Unknown slugs
+                  pass through with a warning. Default: sonnet.
+  CORO_EFFORT     Effort level (low|medium|high|xhigh|max). If unset, the
+                  model's spec default is used (never ambient env).
   CORO_PROJECT    Project root path (default: auto-discover from cwd)
   CORO_ADD_DIRS   Colon-separated list of extra --add-dir paths for claude
-  CORO_EFFORT     Effort level passed to claude (low|medium|high|xhigh|max)
+  CORO_TOKEN_WARN_RATIO  Ratio of context window to trigger token warning (default 0.80)
+  CORO_TOKEN_WARN        Absolute token count override (takes precedence over ratio)
+  CORO_COST_WARN         Session cost warning threshold in USD (overrides per-model default)
 
 Sessions stored in: <project>/.cache/sessions/
 Turn logs stored in: <project>/.cache/turns/
@@ -26,26 +32,217 @@ import json
 import os
 import subprocess
 import sys
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import StrEnum
 from pathlib import Path
 from typing import IO
 
 # ---------------------------------------------------------------------------
-# Config — loaded from environment, no CLI overrides
+# Model registry
 # ---------------------------------------------------------------------------
 
 DEFAULT_MODEL = "sonnet"
 
-def _claude_flags() -> list[str]:
+
+class Effort(StrEnum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    XHIGH = "xhigh"
+    MAX = "max"
+
+
+@dataclass(frozen=True)
+class ModelSpec:
+    id: str                                  # canonical claude id, e.g. "claude-opus-4-7"
+    aliases: tuple[str, ...]                 # ("opus", "best", ...)
+    context_window: int                      # default context (tokens)
+    extended_context: int | None             # context when [1m] suffix used, else None
+    max_output: int                          # documented max output tokens (Messages API)
+    effort_levels: frozenset[Effort]         # empty = no effort support
+    default_effort: Effort | None            # None when effort unsupported
+    cost_warn_usd: float                     # per-session $ threshold
+
+
+REGISTRY: tuple[ModelSpec, ...] = (
+    # Context windows below reflect the API default (200k). Both Opus and Sonnet
+    # support 1M via the [1m] suffix. Max/Team/Enterprise plans auto-upgrade Opus
+    # to 1M without the suffix; coro discovers this from result.modelUsage when
+    # a turn has run.
+    ModelSpec(
+        id="claude-opus-4-7",
+        aliases=("opus", "best"),
+        context_window=200_000,
+        extended_context=1_000_000,
+        max_output=128_000,
+        effort_levels=frozenset({Effort.LOW, Effort.MEDIUM, Effort.HIGH, Effort.XHIGH, Effort.MAX}),
+        default_effort=Effort.XHIGH,
+        cost_warn_usd=50.00,
+    ),
+    ModelSpec(
+        id="claude-sonnet-4-6",
+        aliases=("sonnet",),
+        context_window=200_000,
+        extended_context=1_000_000,
+        max_output=64_000,
+        effort_levels=frozenset({Effort.LOW, Effort.MEDIUM, Effort.HIGH, Effort.MAX}),
+        default_effort=Effort.HIGH,
+        cost_warn_usd=25.00,
+    ),
+    ModelSpec(
+        id="claude-haiku-4-5",
+        aliases=("haiku",),
+        context_window=200_000,
+        extended_context=None,
+        max_output=64_000,
+        effort_levels=frozenset(),
+        default_effort=None,
+        cost_warn_usd=10.00,
+    ),
+)
+
+
+@dataclass(frozen=True)
+class ResolvedModel:
+    claude_arg: str                          # verbatim value passed to `claude --model`
+    spec: ModelSpec | None                   # None if slug not in registry
+    extended: bool                           # [1m] suffix present
+    effort: Effort | None                    # flag to emit; None = omit --effort
+    warnings: tuple[str, ...] = ()
+
+
+def _match_spec(slug: str) -> ModelSpec | None:
+    for s in REGISTRY:
+        if slug == s.id or slug in s.aliases:
+            return s
+    for s in REGISTRY:
+        if s.id in slug:                     # dated snapshot, e.g. claude-opus-4-7-20260101
+            return s
+    return None
+
+
+def _strip_1m(slug: str) -> tuple[str, bool]:
+    if slug.endswith("[1m]"):
+        return slug[:-4], True
+    return slug, False
+
+
+def resolve(model_input: str, effort_input: str | None = None) -> ResolvedModel:
+    """Resolve a user (model, effort) pair. Never rewrites claude_arg.
+
+    Effort rules (no fallback to ambient Claude Code env):
+      - Valid CORO_EFFORT + spec supports it    → emit as-is
+      - Valid CORO_EFFORT + spec lacks support  → drop (no flag), warn
+      - Valid CORO_EFFORT + not in spec's set   → pass through, warn (claude downgrades silently)
+      - Invalid / empty / unset CORO_EFFORT     → spec.default_effort (or None for haiku)
+    """
+    warnings: list[str] = []
+
+    base, extended = _strip_1m(model_input)
+    spec = _match_spec(base)
+
+    if spec is None:
+        warnings.append(
+            f"unknown model '{model_input}'; passing through to claude "
+            f"(warnings may be inaccurate)"
+        )
+
+    if extended and os.environ.get("CLAUDE_CODE_DISABLE_1M_CONTEXT", "").strip() == "1":
+        warnings.append(
+            "CLAUDE_CODE_DISABLE_1M_CONTEXT=1 in env; [1m] suffix will fail at claude"
+        )
+
+    # Effort resolution
+    effort: Effort | None = None
+    requested: Effort | None = None
+    if effort_input is not None and effort_input.strip():
+        try:
+            requested = Effort(effort_input.strip().lower())
+        except ValueError:
+            warnings.append(f"invalid CORO_EFFORT '{effort_input}'; using spec default")
+            requested = None
+
+    if requested is not None:
+        if spec is None:
+            effort = requested                                  # can't validate, pass through
+        elif not spec.effort_levels:
+            warnings.append(f"{spec.id} does not support --effort; dropping '{requested}'")
+            effort = None
+        elif requested not in spec.effort_levels:
+            legal = sorted(e.value for e in spec.effort_levels)
+            warnings.append(
+                f"{spec.id} does not support effort '{requested}' "
+                f"(supported: {', '.join(legal)}); claude will downgrade silently"
+            )
+            effort = requested
+        else:
+            effort = requested
+    elif spec is not None:
+        effort = spec.default_effort                            # None for haiku; else registry default
+
+    return ResolvedModel(
+        claude_arg=model_input,
+        spec=spec,
+        extended=extended,
+        effort=effort,
+        warnings=tuple(warnings),
+    )
+
+
+def resolved_context_window(resolved: ResolvedModel) -> int:
+    if resolved.spec is None:
+        return 200_000
+    if resolved.extended and resolved.spec.extended_context:
+        return resolved.spec.extended_context
+    return resolved.spec.context_window
+
+
+# ---------------------------------------------------------------------------
+# Config — environment reads
+# ---------------------------------------------------------------------------
+
+def _model() -> str:
+    return os.environ.get("CORO_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
+
+
+def _effort_input() -> str | None:
+    v = os.environ.get("CORO_EFFORT", "").strip()
+    return v or None
+
+
+def _project_override() -> str | None:
+    return os.environ.get("CORO_PROJECT", "").strip() or None
+
+
+def token_warn_threshold(resolved: ResolvedModel, ctx_window: int | None = None) -> int:
+    abs_override = os.environ.get("CORO_TOKEN_WARN", "").strip()
+    if abs_override:
+        return int(abs_override)
+    ratio = float(os.environ.get("CORO_TOKEN_WARN_RATIO", "0.80"))
+    if ctx_window is None:
+        ctx_window = resolved_context_window(resolved)
+    return int(ctx_window * ratio)
+
+
+def cost_warn_threshold(resolved: ResolvedModel) -> float:
+    override = os.environ.get("CORO_COST_WARN", "").strip()
+    if override:
+        return float(override)
+    if resolved.spec is None:
+        return 25.00
+    return resolved.spec.cost_warn_usd
+
+
+def _claude_flags(resolved: ResolvedModel) -> list[str]:
     flags = [
         "--output-format", "stream-json",
         "--input-format", "stream-json",
         "--verbose",
         "--dangerously-skip-permissions",
     ]
-    effort = os.environ.get("CORO_EFFORT", "").strip()
-    if effort:
-        flags += ["--effort", effort]
+    if resolved.effort is not None:
+        flags += ["--effort", resolved.effort.value]
     add_dirs = os.environ.get("CORO_ADD_DIRS", "")
     for d in add_dirs.split(":"):
         d = d.strip()
@@ -53,43 +250,18 @@ def _claude_flags() -> list[str]:
             flags += ["--add-dir", d]
     return flags
 
+
+def _emit_warnings(resolved: ResolvedModel) -> None:
+    for w in resolved.warnings:
+        _warn(w)
+
+
 def _load_preamble() -> str:
     """Load protocol.md from fixed path relative to this script."""
     protocol = Path(__file__).parent.parent / "protocol.md"
     if not protocol.exists():
         die(f"protocol.md not found at {protocol}")
     return f"/salience on\n\n{protocol.read_text().strip()}\n\nAcknowledge this protocol and wait for your first instruction."
-
-def _model() -> str:
-    return os.environ.get("CORO_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
-
-MODEL_CONTEXT = {
-    "opus": 1_000_000,
-    "sonnet": 200_000,
-    "haiku": 200_000,
-}
-
-def model_context(model: str) -> int:
-    for slug, ctx in MODEL_CONTEXT.items():
-        if slug in model:
-            return ctx
-    print(f"note: unknown model '{model}', assuming 200k context window", file=sys.stderr)
-    return 200_000
-
-def token_warn_threshold(model: str, ctx_window: int | None = None) -> int:
-    abs_override = os.environ.get("CORO_TOKEN_WARN", "").strip()
-    if abs_override:
-        return int(abs_override)
-    ratio = float(os.environ.get("CORO_TOKEN_WARN_RATIO", "0.80"))
-    if ctx_window is None:
-        ctx_window = model_context(model)
-    return int(ctx_window * ratio)
-
-def cost_warn_threshold() -> float:
-    return float(os.environ.get("CORO_COST_WARN", "25.00"))
-
-def _project_override() -> str | None:
-    return os.environ.get("CORO_PROJECT", "").strip() or None
 
 
 # ---------------------------------------------------------------------------
@@ -270,8 +442,8 @@ def make_payload(content: str) -> str:
         "message": {"role": "user", "content": content}
     })
 
-def run_claude(root: Path, payload: str, model: str, resume_uuid: str | None = None) -> list[dict]:
-    cmd = ["claude", "--print", "--model", model] + _claude_flags()
+def run_claude(root: Path, payload: str, resolved: ResolvedModel, resume_uuid: str | None = None) -> list[dict]:
+    cmd = ["claude", "--print", "--model", resolved.claude_arg] + _claude_flags(resolved)
     if resume_uuid:
         cmd += ["--resume", resume_uuid]
     proc = subprocess.run(cmd, input=payload.encode(), capture_output=True, cwd=root)
@@ -332,6 +504,24 @@ def result_tokens(result: dict) -> tuple[int, int, int, int]:
         u.get("output_tokens", 0),
     )
 
+def extract_context_window(result: dict) -> int | None:
+    """Read the actual context window the model used from result.modelUsage."""
+    mu = result.get("modelUsage") or {}
+    for entry in mu.values():
+        cw = entry.get("contextWindow")
+        if cw:
+            return int(cw)
+    return None
+
+def extract_max_output(result: dict) -> int | None:
+    """Read the actual max-output cap applied for the turn from result.modelUsage."""
+    mu = result.get("modelUsage") or {}
+    for entry in mu.values():
+        mo = entry.get("maxOutputTokens")
+        if mo:
+            return int(mo)
+    return None
+
 def session_total_cost(root: Path, name: str) -> float:
     total = 0.0
     for path in sorted(turns_dir(root).glob(f"{name}-*.jsonl")):
@@ -367,11 +557,19 @@ def cmd_create(args, root: Path):
         die(f"session '{name}' already exists — delete {session_file(root, name)} to recreate")
 
     model = _model()
+    resolved = resolve(model, _effort_input())
+    _emit_warnings(resolved)
     preamble = _load_preamble()
 
     turn = next_turn_number(root, name)
-    print(f"[coroutine] creating session '{name}' (model={model})...", file=sys.stderr)
-    events = run_claude(root, make_payload(preamble), model)
+    effort_str = f" effort={resolved.effort.value}" if resolved.effort else ""
+    print(f"[coroutine] creating session '{name}' (model={model}{effort_str})...", file=sys.stderr)
+    events = run_claude(root, make_payload(preamble), resolved)
+
+    result = extract_result(events)
+    if result and result.get("is_error"):
+        msg = result.get("result", "unknown error")
+        die(f"session creation failed: {msg}")
 
     uuid = extract_session_id(events)
     if not uuid:
@@ -382,7 +580,6 @@ def cmd_create(args, root: Path):
     current_push(root, name)
 
     text = extract_text(events)
-    result = extract_result(events)
     cost = result["total_cost_usd"] if result else 0
     print(f"[coroutine] session={uuid} turn={turn} cost=${cost:.4f}", file=sys.stderr)
     print(f"[coroutine] {extract_yield(text) or '(acknowledged)'}", file=sys.stderr)
@@ -397,7 +594,7 @@ def cmd_create(args, root: Path):
         if extra:
             turn = next_turn_number(root, name)
             print(f"[coroutine] sending initial content turn={turn}...", file=sys.stderr)
-            events = run_claude(root, make_payload(extra), model, resume_uuid=uuid)
+            events = run_claude(root, make_payload(extra), resolved, resume_uuid=uuid)
             save_turn(root, name, turn, events)
 
             text = extract_text(events)
@@ -418,6 +615,8 @@ def cmd_send(root: Path, name: str | None):
     uuid = load_session(root, name)
     meta = load_meta(root, name)
     model = meta.get("model", _model())
+    resolved = resolve(model, _effort_input())
+    _emit_warnings(resolved)
 
     content = read_stdin_or_die()
 
@@ -432,8 +631,9 @@ def cmd_send(root: Path, name: str | None):
     try:
         turn = next_turn_number(root, name)
 
-        print(f"[coroutine] resuming '{name}' turn={turn} model={model}...", file=sys.stderr)
-        events = run_claude(root, make_payload(content), model, resume_uuid=uuid)
+        effort_str = f" effort={resolved.effort.value}" if resolved.effort else ""
+        print(f"[coroutine] resuming '{name}' turn={turn} model={model}{effort_str}...", file=sys.stderr)
+        events = run_claude(root, make_payload(content), resolved, resume_uuid=uuid)
         save_turn(root, name, turn, events)
 
         text = extract_text(events)
@@ -454,7 +654,8 @@ def cmd_send(root: Path, name: str | None):
 def cmd_status(root: Path, name: str | None):
     name = resolve_name(root, name)
     meta = load_meta(root, name)
-    model = os.environ.get("CORO_MODEL", "").strip() or meta.get("model", DEFAULT_MODEL)
+    model = meta.get("model", DEFAULT_MODEL)
+    resolved = resolve(model)                                   # status does not honor CORO_EFFORT
     held = check_send_lock(root, name)
     turn = last_turn_number(root, name)
     if turn < 0:
@@ -468,9 +669,14 @@ def cmd_status(root: Path, name: str | None):
     if result:
         inp, cr, cc, out = result_tokens(result)
         total_ctx = inp + cr + cc
-        tokens_str = f"{total_ctx} in / {out} out  (last turn)"
+        runtime_max_out = extract_max_output(result)
+        if runtime_max_out:
+            tokens_str = f"{total_ctx} in / {out} out (cap {runtime_max_out})  (last turn)"
+        else:
+            tokens_str = f"{total_ctx} in / {out} out  (last turn)"
     else:
         tokens_str = "-"
+        runtime_max_out = None
 
     total_cost = session_total_cost(root, name)
 
@@ -492,6 +698,7 @@ def cmd_status(root: Path, name: str | None):
 
     W = 10  # label column width
     print(f"{'session:':{W}}{name}")
+    print(f"{'model:':{W}}{model}")
     print(f"{'sending:':{W}}{'yes' if held else 'no'}")
     print(f"{'hold:':{W}}{hold_str}")
     print(f"{'tokens:':{W}}{tokens_str}")
@@ -502,13 +709,21 @@ def cmd_status(root: Path, name: str | None):
         warn_missing_yield(turn)
 
     if result:
-        ctx_window = model_context(model)
-        warn_threshold = token_warn_threshold(model, ctx_window)
+        ctx_window = extract_context_window(result) or resolved_context_window(resolved)
+        warn_threshold = token_warn_threshold(resolved, ctx_window)
         if total_ctx > warn_threshold:
             pct = int(total_ctx / ctx_window * 100)
             _warn(f"warning: last turn used {total_ctx} input tokens — {pct}% of {model} context ({ctx_window})")
 
-    cost_threshold = cost_warn_threshold()
+        # Warn if runtime cap is well below model's documented max (e.g. CLAUDE_CODE_MAX_OUTPUT_TOKENS clamp)
+        if resolved.spec and runtime_max_out and runtime_max_out < resolved.spec.max_output // 2:
+            _warn(
+                f"note: runtime max-output cap is {runtime_max_out} tokens "
+                f"({resolved.spec.id} can produce up to {resolved.spec.max_output}); "
+                f"check CLAUDE_CODE_MAX_OUTPUT_TOKENS / ANTHROPIC_MAX_OUTPUT_TOKENS"
+            )
+
+    cost_threshold = cost_warn_threshold(resolved)
     if total_cost > cost_threshold:
         _warn(f"warning: session cost ${total_cost:.2f} exceeds threshold ${cost_threshold:.2f}")
 
@@ -626,7 +841,16 @@ def main():
         prog="coroutine",
         description="Stateful Claude session manager",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="Runtime config via env: CORO_MODEL, CORO_PROJECT, CORO_ADD_DIRS, CORO_EFFORT",
+        epilog=(
+            "Runtime config via env:\n"
+            "  CORO_MODEL   alias (opus|sonnet|haiku|best), canonical id, or [1m]-suffixed;\n"
+            "               unknown slugs pass through with a warning. Default: sonnet.\n"
+            "  CORO_EFFORT  low|medium|high|xhigh|max. If unset, the spec's per-model\n"
+            "               default is used (coro does not inherit CLAUDE_CODE_EFFORT_LEVEL).\n"
+            "  CORO_PROJECT    project root (default: auto-discover)\n"
+            "  CORO_ADD_DIRS   colon-separated --add-dir paths\n"
+            "  CORO_TOKEN_WARN_RATIO / CORO_TOKEN_WARN / CORO_COST_WARN  override thresholds"
+        ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
