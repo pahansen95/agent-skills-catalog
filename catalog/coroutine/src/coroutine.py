@@ -3,12 +3,16 @@
 coroutine — stateful Claude session manager
 
 Usage:
-  coroutine create <name>       # create session (preamble only; stdin for turn 1 deprecated)
-  coroutine send <name>         # reads prompt from stdin
-  coroutine status <name>       # last YIELD signal
-  coroutine turns <name>        # list turns with cost summary
-  coroutine log <name> [<N>]    # raw jsonl for turn N (default: last)
-  coroutine new-phase <slug>    # scaffold .cache/TODO/phase-<slug>.md + kickoff
+  coroutine create <name>            # create session; prints generated slug to stdout
+  coroutine send [<name-or-slug>]    # reads prompt from stdin (bare = CURRENT top)
+  coroutine status [<name-or-slug>]  # last YIELD signal
+  coroutine turns [<name-or-slug>]   # list turns with cost summary
+  coroutine log [<name-or-slug>] [<N>]  # raw jsonl for turn N (default: last)
+  coroutine new-phase <phase-slug>   # scaffold .cache/TODO/phase-<phase-slug>.md + kickoff
+
+Session arguments accept either a slug (e.g. phase-1_1745123456) or a
+shorthand name (e.g. phase-1). Names resolve to a slug at command time;
+ambiguous names fail fast. See protocol.md §Name resolution.
 
 Environment:
   CORO_MODEL      Claude model: alias (opus|sonnet|haiku|best), canonical id
@@ -28,16 +32,19 @@ Subprocess env (set when unset in parent env):
   API_TIMEOUT_MS = 1200000      (20 min) — long phase turns
   BASH_MAX_TIMEOUT_MS = 1200000 (20 min) — long builds/tests in worker
 
-Sessions stored in: <project>/.cache/sessions/
-Turn logs stored in: <project>/.cache/turns/
+Sessions stored in: <project>/.cache/coro/<slug>/
+Turn logs stored in: <project>/.cache/coro/<slug>/turns/
+Slug format:        <name>_<unix-seconds> (generated at `coro create`)
 """
 
 import argparse
 import fcntl
 import json
 import os
+import re
 import subprocess
 import sys
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -265,11 +272,16 @@ def _emit_warnings(resolved: ResolvedModel) -> None:
 
 
 def _load_preamble() -> str:
-    """Load protocol.md from fixed path relative to this script."""
-    protocol = Path(__file__).parent.parent / "protocol.md"
-    if not protocol.exists():
-        die(f"protocol.md not found at {protocol}")
-    return f"/salience on\n\n{protocol.read_text().strip()}\n\nAcknowledge this protocol and wait for your first instruction."
+    """Load role/worker.md — the self-contained worker role spec.
+
+    The worker receives its role doc only; it does not see the full protocol
+    spec (that is orchestrator-side knowledge). See role/worker.md and
+    protocol.md §Architecture for the three-layer separation.
+    """
+    worker_role = Path(__file__).parent.parent / "role" / "worker.md"
+    if not worker_role.exists():
+        die(f"role/worker.md not found at {worker_role}")
+    return f"/salience on\n\n{worker_role.read_text().strip()}\n\nAcknowledge this role and wait for your first instruction."
 
 
 # ---------------------------------------------------------------------------
@@ -285,7 +297,7 @@ def find_project_root() -> Path:
         return root
     current = Path.cwd()
     while True:
-        if (current / ".cache" / "sessions").exists():
+        if (current / ".cache" / "coro").exists():
             return current
         parent = current.parent
         if parent == current:
@@ -294,26 +306,115 @@ def find_project_root() -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Session storage
+# Session storage — slug-keyed layout
+#
+# Sessions are resources. The slug `<name>_<unix-seconds>` is the identity;
+# <name> is a human-friendly label resolved to a slug at command time
+# (see resolve_slug). See protocol.md §Session storage.
 # ---------------------------------------------------------------------------
 
-def sessions_dir(root: Path) -> Path:
-    return root / ".cache" / "sessions"
+_SLUG_RE = re.compile(r"^(?P<name>.+)_(?P<ts>\d+)$")
 
-def turns_dir(root: Path) -> Path:
-    return root / ".cache" / "turns"
 
-def session_file(root: Path, name: str) -> Path:
-    return sessions_dir(root) / f"{name}.uuid"
+def coro_dir(root: Path) -> Path:
+    return root / ".cache" / "coro"
 
-def meta_file(root: Path, name: str) -> Path:
-    return sessions_dir(root) / f"{name}.meta"
+def slug_dir(root: Path, slug: str) -> Path:
+    return coro_dir(root) / slug
 
-def send_lock_path(root: Path, name: str) -> Path:
-    return sessions_dir(root) / f"{name}.lock"
+def session_file(root: Path, slug: str) -> Path:
+    return slug_dir(root, slug) / "uuid"
 
-def acquire_send_lock(root: Path, name: str) -> IO:
-    path = send_lock_path(root, name)
+def meta_file(root: Path, slug: str) -> Path:
+    return slug_dir(root, slug) / "meta"
+
+def send_lock_path(root: Path, slug: str) -> Path:
+    return slug_dir(root, slug) / "lock"
+
+def hold_sentinel_path(root: Path, slug: str) -> Path:
+    return slug_dir(root, slug) / "hold"
+
+def turns_dir(root: Path, slug: str) -> Path:
+    return slug_dir(root, slug) / "turns"
+
+def turn_log_file(root: Path, slug: str, turn: int) -> Path:
+    return turns_dir(root, slug) / f"{turn:03d}.jsonl"
+
+def current_stack_path(root: Path) -> Path:
+    return coro_dir(root) / "CURRENT"
+
+
+def make_slug(name: str) -> str:
+    """Generate a fresh slug for `name` at the current unix time."""
+    return f"{name}_{int(time.time())}"
+
+
+def parse_slug(slug: str) -> tuple[str, int] | None:
+    """Split a slug into (name, unix-seconds). Returns None if not slug-shaped."""
+    m = _SLUG_RE.match(slug)
+    if not m:
+        return None
+    return (m.group("name"), int(m.group("ts")))
+
+
+def list_slugs(root: Path) -> list[str]:
+    """All on-disk session slugs (directories under .cache/coro/ containing a uuid file)."""
+    base = coro_dir(root)
+    if not base.exists():
+        return []
+    out = []
+    for child in base.iterdir():
+        if child.is_dir() and (child / "uuid").exists():
+            out.append(child.name)
+    return sorted(out)
+
+
+def resolve_slug(root: Path, arg: str) -> str:
+    """Resolve a user argument (slug or name) to a canonical slug.
+
+    Rules (in order):
+      1. Exact slug match — directory exists and has a uuid file → use it.
+      2. Name match — slugs whose <name> part == arg:
+         - zero → error
+         - one → use it
+         - multiple → fail fast, list candidates
+    """
+    if slug_dir(root, arg).is_dir() and session_file(root, arg).exists():
+        return arg
+
+    matches = []
+    for slug in list_slugs(root):
+        parsed = parse_slug(slug)
+        if parsed and parsed[0] == arg:
+            matches.append(slug)
+
+    if not matches:
+        die(f"no session matches '{arg}' — run 'coro list' or 'coro create {arg}'")
+    if len(matches) == 1:
+        return matches[0]
+    candidates = "\n  ".join(sorted(matches))
+    die(
+        f"'{arg}' is ambiguous — matches {len(matches)} sessions:\n  {candidates}\n"
+        f"specify the full slug to disambiguate"
+    )
+
+
+def resolve_session_arg(root: Path, arg: str | None) -> str:
+    """Resolve an optional session argument (slug or name) to a slug.
+
+    If arg is None, use the top of CURRENT. If arg is given, resolve via
+    resolve_slug.
+    """
+    if arg is not None:
+        return resolve_slug(root, arg)
+    top = current_top(root)
+    if top is None:
+        die("no session specified and CURRENT stack is empty; run 'coro use <name-or-slug>' first")
+    return top
+
+
+def acquire_send_lock(root: Path, slug: str) -> IO:
+    path = send_lock_path(root, slug)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.touch(exist_ok=True)
     fh = path.open("w")
@@ -322,10 +423,11 @@ def acquire_send_lock(root: Path, name: str) -> IO:
         return fh
     except BlockingIOError:
         fh.close()
-        die(f"another send is in flight for session '{name}'")
+        die(f"another send is in flight for session '{slug}'")
 
-def check_send_lock(root: Path, name: str) -> bool:
-    path = send_lock_path(root, name)
+
+def check_send_lock(root: Path, slug: str) -> bool:
+    path = send_lock_path(root, slug)
     if not path.exists():
         return False
     fh = path.open("r")
@@ -337,18 +439,17 @@ def check_send_lock(root: Path, name: str) -> bool:
         fh.close()
     return False
 
-def hold_sentinel_path(root: Path, name: str) -> Path:
-    return sessions_dir(root) / f"{name}.hold"
 
-def write_hold(root: Path, name: str, reason: str) -> None:
-    p = hold_sentinel_path(root, name)
+def write_hold(root: Path, slug: str, reason: str) -> None:
+    p = hold_sentinel_path(root, slug)
     p.parent.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).isoformat()
     p.write_text(f"{reason}\n{ts}\n" if reason else f"\n{ts}\n")
 
-def clear_hold(root: Path, name: str) -> str | None:
+
+def clear_hold(root: Path, slug: str) -> str | None:
     """Remove sentinel; return prior reason if any (for logging)."""
-    p = hold_sentinel_path(root, name)
+    p = hold_sentinel_path(root, slug)
     if not p.exists():
         return None
     text = p.read_text()
@@ -356,15 +457,14 @@ def clear_hold(root: Path, name: str) -> str | None:
     lines = text.splitlines()
     return lines[0] if lines and lines[0].strip() else None
 
-def read_hold(root: Path, name: str) -> tuple[bool, str]:
-    p = hold_sentinel_path(root, name)
+
+def read_hold(root: Path, slug: str) -> tuple[bool, str]:
+    p = hold_sentinel_path(root, slug)
     if not p.exists():
         return (False, "")
     lines = p.read_text().splitlines()
     return (True, lines[0] if lines and lines[0].strip() else "")
 
-def current_stack_path(root: Path) -> Path:
-    return sessions_dir(root) / "CURRENT"
 
 def current_top(root: Path) -> str | None:
     p = current_stack_path(root)
@@ -373,13 +473,15 @@ def current_top(root: Path) -> str | None:
     lines = [l for l in p.read_text().splitlines() if l.strip()]
     return lines[-1] if lines else None
 
-def current_push(root: Path, name: str) -> None:
+
+def current_push(root: Path, slug: str) -> None:
     p = current_stack_path(root)
     p.parent.mkdir(parents=True, exist_ok=True)
     existing = p.read_text().splitlines() if p.exists() else []
     existing = [l for l in existing if l.strip()]
-    existing.append(name)
+    existing.append(slug)
     p.write_text("\n".join(existing) + "\n")
+
 
 def current_pop(root: Path) -> str | None:
     p = current_stack_path(root)
@@ -392,52 +494,51 @@ def current_pop(root: Path) -> str | None:
     p.write_text("\n".join(existing) + ("\n" if existing else ""))
     return top
 
+
 def current_list(root: Path) -> list[str]:
     p = current_stack_path(root)
     if not p.exists():
         return []
     return [l for l in p.read_text().splitlines() if l.strip()]
 
-def resolve_name(root: Path, name: str | None) -> str:
-    if name is not None:
-        return name
-    top = current_top(root)
-    if top is None:
-        die("no session specified and CURRENT stack is empty; run 'coro use <name>' first")
-    return top
 
-def load_session(root: Path, name: str) -> str:
-    path = session_file(root, name)
+def load_session(root: Path, slug: str) -> str:
+    """Read the persisted claude session UUID for `slug`."""
+    path = session_file(root, slug)
     if not path.exists():
-        die(f"no session '{name}' — run: coro create {name}")
+        die(f"no session '{slug}' on disk")
     return path.read_text().strip()
 
-def load_meta(root: Path, name: str) -> dict:
-    path = meta_file(root, name)
+
+def load_meta(root: Path, slug: str) -> dict:
+    path = meta_file(root, slug)
     if not path.exists():
         return {}
     return json.loads(path.read_text())
 
-def save_session(root: Path, name: str, uuid: str, model: str):
-    sessions_dir(root).mkdir(parents=True, exist_ok=True)
-    session_file(root, name).write_text(uuid + "\n")
-    meta_file(root, name).write_text(json.dumps({"model": model}) + "\n")
 
-def turn_log_file(root: Path, name: str, turn: int) -> Path:
-    return turns_dir(root) / f"{name}-{turn:03d}.jsonl"
+def save_session(root: Path, slug: str, uuid: str, model: str):
+    slug_dir(root, slug).mkdir(parents=True, exist_ok=True)
+    session_file(root, slug).write_text(uuid + "\n")
+    meta_file(root, slug).write_text(json.dumps({"model": model}) + "\n")
 
-def next_turn_number(root: Path, name: str) -> int:
-    turns_dir(root).mkdir(parents=True, exist_ok=True)
-    existing = sorted(turns_dir(root).glob(f"{name}-*.jsonl"))
+
+def next_turn_number(root: Path, slug: str) -> int:
+    turns_dir(root, slug).mkdir(parents=True, exist_ok=True)
+    existing = sorted(turns_dir(root, slug).glob("*.jsonl"))
     if not existing:
         return 0
-    return int(existing[-1].stem.rsplit("-", 1)[-1]) + 1
+    return int(existing[-1].stem) + 1
 
-def last_turn_number(root: Path, name: str) -> int:
-    existing = sorted(turns_dir(root).glob(f"{name}-*.jsonl"))
+
+def last_turn_number(root: Path, slug: str) -> int:
+    d = turns_dir(root, slug)
+    if not d.exists():
+        return -1
+    existing = sorted(d.glob("*.jsonl"))
     if not existing:
         return -1
-    return int(existing[-1].stem.rsplit("-", 1)[-1])
+    return int(existing[-1].stem)
 
 
 # ---------------------------------------------------------------------------
@@ -598,28 +699,31 @@ def extract_max_output(result: dict) -> int | None:
             return int(mo)
     return None
 
-def session_total_cost(root: Path, name: str) -> float:
+def session_total_cost(root: Path, slug: str) -> float:
     total = 0.0
-    for path in sorted(turns_dir(root).glob(f"{name}-*.jsonl")):
+    d = turns_dir(root, slug)
+    if not d.exists():
+        return 0.0
+    for path in sorted(d.glob("*.jsonl")):
         events = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
         r = extract_result(events)
         if r:
             total += r.get("total_cost_usd", 0.0)
     return total
 
-def save_turn(root: Path, name: str, turn: int, events: list[dict]):
+def save_turn(root: Path, slug: str, turn: int, events: list[dict]):
     """Write turn jsonl in a single pass (used for retroactive/error-path saves)."""
-    turns_dir(root).mkdir(parents=True, exist_ok=True)
-    path = turn_log_file(root, name, turn)
+    turns_dir(root, slug).mkdir(parents=True, exist_ok=True)
+    path = turn_log_file(root, slug, turn)
     with path.open("w") as f:
         for e in events:
             f.write(json.dumps(e) + "\n")
 
 
-def open_turn_writer(root: Path, name: str, turn: int) -> IO:
+def open_turn_writer(root: Path, slug: str, turn: int) -> IO:
     """Open the turn jsonl for progressive writes. Caller must close."""
-    turns_dir(root).mkdir(parents=True, exist_ok=True)
-    path = turn_log_file(root, name, turn)
+    turns_dir(root, slug).mkdir(parents=True, exist_ok=True)
+    path = turn_log_file(root, slug, turn)
     return path.open("w")
 
 
@@ -675,27 +779,33 @@ def read_stdin_or_die() -> str:
 # Commands
 # ---------------------------------------------------------------------------
 
-def _delete_session_files(root: Path, name: str) -> None:
+def _delete_session_files(root: Path, slug: str) -> None:
     """Remove on-disk session bookkeeping. Used when create fails irrecoverably.
 
     Turn jsonl files are intentionally preserved for post-mortem debugging.
     """
-    for p in (session_file(root, name), meta_file(root, name),
-              hold_sentinel_path(root, name), send_lock_path(root, name)):
+    # Remove bookkeeping files; leave turns/ subdir intact.
+    for p in (session_file(root, slug), meta_file(root, slug),
+              hold_sentinel_path(root, slug), send_lock_path(root, slug)):
         try:
             p.unlink(missing_ok=True)
         except OSError:
             pass
     # Pop from CURRENT stack if we put it there
     stack = current_list(root)
-    if stack and stack[-1] == name:
+    if stack and stack[-1] == slug:
         current_pop(root)
 
 
 def cmd_create(args, root: Path):
     name = args.name
-    if session_file(root, name).exists():
-        die(f"session '{name}' already exists — delete {session_file(root, name)} to recreate")
+    if "_" in name and parse_slug(name):
+        die(f"refusing to create session with slug-shaped name '{name}' — pick a name without a trailing _<digits>")
+
+    slug = make_slug(name)
+    # Extremely unlikely (same-second collision), but handle it anyway.
+    if slug_dir(root, slug).exists():
+        die(f"slug '{slug}' already exists — wait a second and retry")
 
     model = _model()
     resolved = resolve(model, _effort_input())
@@ -705,15 +815,15 @@ def cmd_create(args, root: Path):
     # Pre-assign UUID and persist before invoking claude, so a crash mid-create
     # leaves a recoverable record. Uses --session-id (PoC 1 confirmed).
     session_uuid = str(uuid.uuid4())
-    save_session(root, name, session_uuid, model)
-    current_push(root, name)
+    save_session(root, slug, session_uuid, model)
+    current_push(root, slug)
 
-    turn = next_turn_number(root, name)
+    turn = next_turn_number(root, slug)
     effort_str = f" effort={resolved.effort.value}" if resolved.effort else ""
-    print(f"[coroutine] creating session '{name}' (model={model}{effort_str}) id={session_uuid[:8]}..",
+    print(f"[coroutine] creating session slug={slug} (model={model}{effort_str}) id={session_uuid[:8]}..",
           file=sys.stderr)
 
-    writer = open_turn_writer(root, name, turn)
+    writer = open_turn_writer(root, slug, turn)
     try:
         # Preamble turn: don't stream preamble-ack text to stdout (low signal, high noise).
         on_event = make_stream_callback(writer, print_text=False, progress=False)
@@ -726,10 +836,10 @@ def cmd_create(args, root: Path):
     if result and result.get("is_error"):
         if budget_exceeded(result):
             cost = result.get("total_cost_usd", 0)
-            _delete_session_files(root, name)
+            _delete_session_files(root, slug)
             die(f"session creation aborted: budget of ${_max_budget_usd()} exceeded (spent ${cost:.4f})")
         msg = result.get("result", "unknown error")
-        _delete_session_files(root, name)
+        _delete_session_files(root, slug)
         die(f"session creation failed: {msg}")
 
     reported = extract_session_id(events)
@@ -740,6 +850,8 @@ def cmd_create(args, root: Path):
     cost = result["total_cost_usd"] if result else 0
     print(f"[coroutine] session={session_uuid} turn={turn} cost=${cost:.4f}", file=sys.stderr)
     print(f"[coroutine] {extract_yield(text) or '(acknowledged)'}", file=sys.stderr)
+    # Print the slug on stdout so shell callers can capture it.
+    print(slug)
 
     # Turn 1 (optional, deprecated): if stdin has content, send immediately.
     if not sys.stdin.isatty():
@@ -748,10 +860,10 @@ def cmd_create(args, root: Path):
 
         extra = sys.stdin.read().strip()
         if extra:
-            turn = next_turn_number(root, name)
+            turn = next_turn_number(root, slug)
             print(f"[coroutine] sending initial content turn={turn}...", file=sys.stderr)
 
-            writer = open_turn_writer(root, name, turn)
+            writer = open_turn_writer(root, slug, turn)
             try:
                 on_event = make_stream_callback(writer, print_text=True, progress=True)
                 events = run_claude(root, make_payload(extra), resolved,
@@ -774,31 +886,31 @@ def cmd_create(args, root: Path):
                 warn_missing_yield(turn)
 
 
-def cmd_send(root: Path, name: str | None):
-    name = resolve_name(root, name)
-    session_uuid = load_session(root, name)
-    meta = load_meta(root, name)
+def cmd_send(root: Path, arg: str | None):
+    slug = resolve_session_arg(root, arg)
+    session_uuid = load_session(root, slug)
+    meta = load_meta(root, slug)
     model = meta.get("model", _model())
     resolved = resolve(model, _effort_input())
     _emit_warnings(resolved)
 
     content = read_stdin_or_die()
 
-    prior_hold = clear_hold(root, name)
+    prior_hold = clear_hold(root, slug)
     if prior_hold is not None:
-        msg = f"note: cleared hold on session '{name}'"
+        msg = f"note: cleared hold on session '{slug}'"
         if prior_hold:
             msg += f" (reason: {prior_hold})"
         print(msg, file=sys.stderr)
 
-    lock_fh = acquire_send_lock(root, name)
+    lock_fh = acquire_send_lock(root, slug)
     try:
-        turn = next_turn_number(root, name)
+        turn = next_turn_number(root, slug)
 
         effort_str = f" effort={resolved.effort.value}" if resolved.effort else ""
-        print(f"[coroutine] resuming '{name}' turn={turn} model={model}{effort_str}...", file=sys.stderr)
+        print(f"[coroutine] resuming {slug} turn={turn} model={model}{effort_str}...", file=sys.stderr)
 
-        writer = open_turn_writer(root, name, turn)
+        writer = open_turn_writer(root, slug, turn)
         try:
             on_event = make_stream_callback(writer, print_text=True, progress=True)
             events = run_claude(root, make_payload(content), resolved,
@@ -823,16 +935,16 @@ def cmd_send(root: Path, name: str | None):
         lock_fh.close()
 
 
-def cmd_status(root: Path, name: str | None):
-    name = resolve_name(root, name)
-    meta = load_meta(root, name)
+def cmd_status(root: Path, arg: str | None):
+    slug = resolve_session_arg(root, arg)
+    meta = load_meta(root, slug)
     model = meta.get("model", DEFAULT_MODEL)
     resolved = resolve(model)                                   # status does not honor CORO_EFFORT
-    held = check_send_lock(root, name)
-    turn = last_turn_number(root, name)
+    held = check_send_lock(root, slug)
+    turn = last_turn_number(root, slug)
     if turn < 0:
-        die(f"no turns found for session '{name}'")
-    path = turn_log_file(root, name, turn)
+        die(f"no turns found for session '{slug}'")
+    path = turn_log_file(root, slug, turn)
     events = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
     text = extract_text(events)
     result = extract_result(events)
@@ -850,9 +962,9 @@ def cmd_status(root: Path, name: str | None):
         tokens_str = "-"
         runtime_max_out = None
 
-    total_cost = session_total_cost(root, name)
+    total_cost = session_total_cost(root, slug)
 
-    is_held, hold_reason = read_hold(root, name)
+    is_held, hold_reason = read_hold(root, slug)
     if is_held:
         hold_str = f"yes — {hold_reason}" if hold_reason else "yes"
     else:
@@ -869,7 +981,7 @@ def cmd_status(root: Path, name: str | None):
         yield_str = f"(no YIELD signal in turn {turn}) last: {last_line}"
 
     W = 10  # label column width
-    print(f"{'session:':{W}}{name}")
+    print(f"{'session:':{W}}{slug}")
     print(f"{'model:':{W}}{model}")
     print(f"{'sending:':{W}}{'yes' if held else 'no'}")
     print(f"{'hold:':{W}}{hold_str}")
@@ -904,16 +1016,17 @@ def cmd_status(root: Path, name: str | None):
         _warn(f"warning: session cost ${total_cost:.2f} exceeds threshold ${cost_threshold:.2f}")
 
 
-def cmd_turns(root: Path, name: str | None):
-    name = resolve_name(root, name)
-    logs = sorted(turns_dir(root).glob(f"{name}-*.jsonl"))
+def cmd_turns(root: Path, arg: str | None):
+    slug = resolve_session_arg(root, arg)
+    d = turns_dir(root, slug)
+    logs = sorted(d.glob("*.jsonl")) if d.exists() else []
     if not logs:
-        die(f"no turns found for session '{name}'")
-    meta = load_meta(root, name)
+        die(f"no turns found for session '{slug}'")
+    meta = load_meta(root, slug)
     model = meta.get("model", "?")
-    print(f"session: {name}  model: {model}")
+    print(f"session: {slug}  model: {model}")
     for path in logs:
-        turn = int(path.stem.rsplit("-", 1)[-1])
+        turn = int(path.stem)
         events = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
         result = extract_result(events)
         text = extract_text(events)
@@ -923,27 +1036,26 @@ def cmd_turns(root: Path, name: str | None):
         else:
             summary = extract_yield(text) or f"(no yield) {text.strip().splitlines()[-1][:60] if text.strip() else ''}"
         print(f"  turn {turn:03d}  cost={cost}  {summary}")
-    total = session_total_cost(root, name)
+    total = session_total_cost(root, slug)
     print(f"  total        ${total:.4f}")
 
 
-def cmd_log(root: Path, name: str | None, turn: int | None):
-    name = resolve_name(root, name)
+def cmd_log(root: Path, arg: str | None, turn: int | None):
+    slug = resolve_session_arg(root, arg)
     if turn is None:
-        turn = last_turn_number(root, name)
+        turn = last_turn_number(root, slug)
         if turn < 0:
-            die(f"no turns found for session '{name}'")
-    path = turn_log_file(root, name, turn)
+            die(f"no turns found for session '{slug}'")
+    path = turn_log_file(root, slug, turn)
     if not path.exists():
-        die(f"no log for turn {turn} of session '{name}'")
+        die(f"no log for turn {turn} of session '{slug}'")
     print(path.read_text(), end="")
 
 
-def cmd_use(root: Path, name: str):
-    if not session_file(root, name).exists():
-        die(f"no session '{name}' — run: coro create {name}")
-    current_push(root, name)
-    print(f"pushed '{name}'", file=sys.stderr)
+def cmd_use(root: Path, arg: str):
+    slug = resolve_slug(root, arg)
+    current_push(root, slug)
+    print(f"pushed {slug}", file=sys.stderr)
 
 
 def cmd_pop(root: Path):
@@ -958,49 +1070,49 @@ def cmd_list_sessions(root: Path):
     if not stack:
         print("(empty)")
         return
-    for name in reversed(stack):
-        print(name)
+    for slug in reversed(stack):
+        print(slug)
 
 
 def cmd_new_phase(args, root: Path):
-    slug = args.slug
+    phase_slug = args.slug
     todo_dir = root / ".cache" / "TODO"
     todo_dir.mkdir(parents=True, exist_ok=True)
 
-    spec_path = todo_dir / f"phase-{slug}.md"
-    kickoff_path = todo_dir / f"phase-{slug}-kickoff.md"
+    spec_path = todo_dir / f"phase-{phase_slug}.md"
+    kickoff_path = todo_dir / f"phase-{phase_slug}-kickoff.md"
 
     if (spec_path.exists() or kickoff_path.exists()) and not args.force:
-        die(f"phase '{slug}' files already exist; use --force to overwrite")
+        die(f"phase '{phase_slug}' files already exist; use --force to overwrite")
 
     template_dir = Path(__file__).parent.parent / "skills" / "coro-develop" / "templates"
     spec_template = (template_dir / "phase.md").read_text()
     kickoff_template = (template_dir / "phase-kickoff.md").read_text()
 
-    spec_path.write_text(spec_template.replace("{slug}", slug))
-    kickoff_path.write_text(kickoff_template.replace("{slug}", slug))
+    spec_path.write_text(spec_template.replace("{slug}", phase_slug))
+    kickoff_path.write_text(kickoff_template.replace("{slug}", phase_slug))
 
     print(f"created {spec_path}")
     print(f"created {kickoff_path}")
 
 
 def cmd_hold(args, root: Path) -> int:
-    name = resolve_name(root, args.name)
-    load_session(root, name)
+    slug = resolve_session_arg(root, args.name)
+    load_session(root, slug)
     reason = " ".join(r for r in (args.reason or []) if r.strip())
-    write_hold(root, name, reason)
-    print(f"held session '{name}'" + (f" — {reason}" if reason else ""))
+    write_hold(root, slug, reason)
+    print(f"held session {slug}" + (f" — {reason}" if reason else ""))
     return 0
 
 
 def cmd_unhold(args, root: Path) -> int:
-    name = resolve_name(root, args.name)
-    load_session(root, name)
-    prior = clear_hold(root, name)
+    slug = resolve_session_arg(root, args.name)
+    load_session(root, slug)
+    prior = clear_hold(root, slug)
     if prior is None:
-        print(f"session '{name}' was not held")
+        print(f"session {slug} was not held")
     else:
-        print(f"unheld session '{name}'" + (f" (was: {prior})" if prior else ""))
+        print(f"unheld session {slug}" + (f" (was: {prior})" if prior else ""))
     return 0
 
 
