@@ -163,14 +163,24 @@ def test_turn_numbering_monotonic(coro_module, tmp_path_factory, n_turns, ts):
 # ---------------------------------------------------------------------------
 
 yield_statuses = st.sampled_from(["DONE", "BLOCKED", "FAILED", "RUNNING", "CHECK"])
-summary_text = st.text(
-    alphabet=st.characters(
-        whitelist_categories=("Ll", "Lu", "Nd", "Zs"),
-        whitelist_characters=" .,:;",
-    ),
+
+# Summary: require at least one non-whitespace character so the
+# content-preservation assertion isn't vacuously satisfied by substring-matching
+# an empty string.
+_summary_core = st.text(
+    alphabet=st.characters(whitelist_categories=("Ll", "Lu", "Nd"), whitelist_characters=".,:;"),
     min_size=1,
-    max_size=60,
+    max_size=30,
 )
+_summary_padding = st.text(
+    alphabet=st.characters(whitelist_categories=("Ll", "Lu", "Nd", "Zs"), whitelist_characters=" .,:;"),
+    min_size=0,
+    max_size=15,
+)
+summary_text = st.tuples(_summary_padding, _summary_core, _summary_padding).map(
+    lambda parts: "".join(parts)
+)
+
 trailing_ws = st.text(alphabet=" \t\n", min_size=0, max_size=10)
 leading_ws_lines = st.text(
     alphabet=st.characters(whitelist_categories=("Ll", "Nd", "Zs", "Cc"), blacklist_characters=":"),
@@ -189,8 +199,12 @@ def test_yield_extraction_stable_under_whitespace_noise(coro_module, status, sum
     assert extracted is not None
     # Extracted line should start with YIELD: (case-insensitive), have correct status
     assert extracted.upper().startswith(f"YIELD: {status}")
-    # Summary content preserved
-    assert summary.strip() in extracted or summary in extracted
+    # Summary content preserved. Strip trailing whitespace only; the stripped
+    # form is guaranteed non-empty by the summary_text strategy, so this
+    # substring check is meaningful.
+    summary_stripped = summary.rstrip()
+    assert summary_stripped, "strategy must produce non-empty stripped summaries"
+    assert summary_stripped in extracted
 
 
 # ---------------------------------------------------------------------------
