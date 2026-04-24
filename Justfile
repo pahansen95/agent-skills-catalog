@@ -1,4 +1,5 @@
 skills_dir := "~/.claude/skills"
+skill_tool := justfile_directory() / "tools" / "skill"
 
 # Per-clone setup: mount the meta/hooks orphan branch as a worktree at
 # hooks/ and point core.hooksPath at it. Idempotent — safe to re-run.
@@ -14,33 +15,22 @@ _setup-hooks:
     git config core.hooksPath hooks
     echo "hooks active: core.hooksPath=$(git config core.hooksPath)"
 
-# List all available domain/skill slugs.
+# List catalog skill refs as `<domain>/<name>`, one per line.
 list:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    for skill in catalog/*/skills/*/; do
-        domain="${skill#catalog/}"
-        domain="${domain%%/*}"
-        skill_name="${skill%/}"
-        skill_name="${skill_name##*/}"
-        echo "${domain}/${skill_name}"
-    done
+    @{{ skill_tool }} list
 
-# Install a skill into the skills directory.
+# Install a skill.
 # Usage: just install <domain/skill-name> [dest]
-# Example: just install documentation/iterative-docs
 install skill dest=skills_dir:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    domain="{{ skill }}"
-    skill_name="${domain#*/}"
-    src="catalog/${domain%/*}/skills/${skill_name}"
-    dst="${HOME}/.claude/skills/${skill_name}"
-    [[ "{{ dest }}" != "~/.claude/skills" ]] && dst="{{ dest }}/${skill_name}"
-    if [[ ! -d "${src}" ]]; then
-        echo "error: skill not found: ${src}" >&2
-        exit 1
-    fi
-    mkdir -p "${dst}"
-    rsync -rL --delete "${src}/" "${dst}/"
-    echo "installed ${skill_name} -> ${dst}"
+    {{ skill_tool }} --dest {{ dest }} install {{ skill }}
+
+# Uninstall a skill by name.
+# Usage: just uninstall <skill-name> [dest]
+uninstall name dest=skills_dir:
+    {{ skill_tool }} --dest {{ dest }} uninstall {{ name }}
+
+# Reinstall a skill. If the installed tree has scripts/reinstall, it drives
+# the preserve-list contract; otherwise falls back to uninstall + install.
+# Usage: just reinstall <domain/skill-name> [dest]
+reinstall skill dest=skills_dir:
+    {{ skill_tool }} --dest {{ dest }} reinstall {{ skill }}
