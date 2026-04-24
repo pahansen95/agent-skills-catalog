@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Install-time hook for the coro-develop skill.
+#
+# Invoked by the root Justfile's `install` target after rsync -rL has
+# copied the skill tree into ~/.claude/skills/<name>/. Runs with cwd set
+# to the scripts/ dir, so .venv/ lands next to coroutine.py.
+set -euo pipefail
+
+declare CONTEXT; CONTEXT="$( cd -- "${BASH_SOURCE[0]%/*}" && pwd )"; declare -r CONTEXT
+cd "${CONTEXT}"
+
+command -v uv &>/dev/null || { echo 'error: uv is not in PATH' >&2; exit 1; }
+
+# pyenv is optional — pin only when available. uv handles python discovery
+# independently.
+if command -v pyenv &>/dev/null; then
+  pyenv local 3.13 2>/dev/null || true
+fi
+
+uv venv --python 3.13 --quiet
+echo "installed coro-develop venv at ${CONTEXT}/.venv"

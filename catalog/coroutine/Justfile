@@ -1,0 +1,25 @@
+# Dev-only targets for the coroutine domain. Does NOT ship with the skill;
+# the root install target only copies skills/<name>/ into ~/.claude/skills/.
+#
+# The skill's runtime venv at skills/coro-develop/scripts/.venv/ is built by
+# skills/coro-develop/scripts/install (invoked at install time). For local
+# development, run `just dev-setup` to build that venv plus test deps.
+
+skill_scripts := justfile_directory() / "skills" / "coro-develop" / "scripts"
+venv          := skill_scripts / ".venv"
+python        := venv / "bin" / "python"
+pytest        := venv / "bin" / "pytest"
+tests_dir     := justfile_directory() / "tests"
+
+# Build the skill venv and install test deps. Idempotent.
+dev-setup:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    command -v uv &>/dev/null || { echo 'error: uv is not in PATH' >&2; exit 1; }
+    "{{ skill_scripts }}/install"
+    uv pip install --python "{{ python }}" --quiet pytest hypothesis
+    echo "dev venv ready at {{ venv }}"
+
+# Run the test suite. Assumes dev-setup has been run.
+test *args:
+    {{ pytest }} {{ tests_dir }} {{ args }}

@@ -356,6 +356,41 @@ def _emit_warnings(resolved: ResolvedModel) -> None:
         _warn(w)
 
 
+def _skill_root() -> Path:
+    """Resolve the skill root — the directory containing SKILL.md.
+
+    In the installed tree, __file__ is <skill_root>/scripts/coroutine.py, so
+    walk-up finds SKILL.md one level above. In the source tree, __file__ is
+    catalog/coroutine/src/coroutine.py, which is not an ancestor of any
+    SKILL.md; fall back to finding the sole skill that symlinks this file
+    back to itself (catalog/coroutine/skills/*/scripts/coroutine.py → src/).
+    """
+    here = Path(__file__).resolve()
+
+    # Installed tree: SKILL.md sits at or above our directory.
+    p = here.parent
+    while p != p.parent:
+        if (p / "SKILL.md").is_file():
+            return p
+        p = p.parent
+
+    # Source tree: scan sibling skills/ for a package that resolves back to us.
+    domain_root = here.parent.parent                                 # .../catalog/<domain>/
+    skills_dir = domain_root / "skills"
+    if skills_dir.is_dir():
+        for candidate in skills_dir.iterdir():
+            if not (candidate / "SKILL.md").is_file():
+                continue
+            script = candidate / "scripts" / "coroutine.py"
+            try:
+                if script.resolve() == here:
+                    return candidate
+            except OSError:
+                continue
+
+    die("SKILL.md sentinel not found — coroutine.py is running outside a skill install")
+
+
 def _load_preamble() -> str:
     """Load role/worker.md — the self-contained worker role spec.
 
@@ -363,7 +398,7 @@ def _load_preamble() -> str:
     spec (that is orchestrator-side knowledge). See role/worker.md and
     protocol.md §Architecture for the three-layer separation.
     """
-    worker_role = Path(__file__).parent.parent / "role" / "worker.md"
+    worker_role = _skill_root() / "role" / "worker.md"
     if not worker_role.exists():
         die(f"role/worker.md not found at {worker_role}")
     return f"/salience on\n\n{worker_role.read_text().strip()}\n\nAcknowledge this role and wait for your first instruction."
@@ -1179,7 +1214,7 @@ def cmd_new_phase(args, root: Path):
     if (spec_path.exists() or kickoff_path.exists()) and not args.force:
         die(f"phase '{phase_slug}' files already exist; use --force to overwrite")
 
-    template_dir = Path(__file__).parent.parent / "skills" / "coro-develop" / "templates"
+    template_dir = _skill_root() / "templates"
     spec_template = (template_dir / "phase.md").read_text()
     kickoff_template = (template_dir / "phase-kickoff.md").read_text()
 
