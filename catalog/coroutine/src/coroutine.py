@@ -18,9 +18,15 @@ Environment:
                   model's spec default is used (never ambient env).
   CORO_PROJECT    Project root path (default: auto-discover from cwd)
   CORO_ADD_DIRS   Colon-separated list of extra --add-dir paths for claude
+  CORO_MAX_BUDGET_USD    Per-turn budget cap in USD. When exceeded: soft-fail
+                         in send, hard-fail in create. Unset = no cap.
   CORO_TOKEN_WARN_RATIO  Ratio of context window to trigger token warning (default 0.80)
   CORO_TOKEN_WARN        Absolute token count override (takes precedence over ratio)
   CORO_COST_WARN         Session cost warning threshold in USD (overrides per-model default)
+
+Subprocess env (set when unset in parent env):
+  API_TIMEOUT_MS = 1200000      (20 min) — long phase turns
+  BASH_MAX_TIMEOUT_MS = 1200000 (20 min) — long builds/tests in worker
 
 Sessions stored in: <project>/.cache/sessions/
 Turn logs stored in: <project>/.cache/turns/
@@ -32,6 +38,8 @@ import json
 import os
 import subprocess
 import sys
+import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -442,20 +450,85 @@ def make_payload(content: str) -> str:
         "message": {"role": "user", "content": content}
     })
 
-def run_claude(root: Path, payload: str, resolved: ResolvedModel, resume_uuid: str | None = None) -> list[dict]:
+def _subprocess_env() -> dict[str, str]:
+    """Build env for the claude subprocess. Set long-phase defaults unless user has them."""
+    env = os.environ.copy()
+    env.setdefault("API_TIMEOUT_MS", "1200000")                 # 20 min
+    env.setdefault("BASH_MAX_TIMEOUT_MS", "1200000")            # 20 min
+    return env
+
+
+def _max_budget_usd() -> str | None:
+    v = os.environ.get("CORO_MAX_BUDGET_USD", "").strip()
+    return v or None
+
+
+def run_claude(
+    root: Path,
+    payload: str,
+    resolved: ResolvedModel,
+    *,
+    session_id: str | None = None,
+    resume_uuid: str | None = None,
+    on_event: Callable[[dict], None] | None = None,
+) -> list[dict]:
+    """Invoke `claude --print` with stream-json I/O. Events are streamed line-by-line.
+
+    Exactly one of session_id (create) or resume_uuid (resume) must be provided —
+    they are mutually exclusive at the claude CLI level.
+
+    on_event is called for each parsed JSON event as it arrives. Use it to
+    progressively write the turn jsonl, print assistant text, etc.
+    """
+    if (session_id is None) == (resume_uuid is None):
+        die("run_claude requires exactly one of session_id or resume_uuid")
+
     cmd = ["claude", "--print", "--model", resolved.claude_arg] + _claude_flags(resolved)
-    if resume_uuid:
+    if session_id:
+        cmd += ["--session-id", session_id]
+    else:
         cmd += ["--resume", resume_uuid]
-    proc = subprocess.run(cmd, input=payload.encode(), capture_output=True, cwd=root)
-    events = []
-    for line in proc.stdout.decode().splitlines():
-        line = line.strip()
+
+    budget = _max_budget_usd()
+    if budget:
+        cmd += ["--max-budget-usd", budget]
+
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        cwd=root,
+        env=_subprocess_env(),
+        text=True,
+        encoding="utf-8",
+    )
+    assert proc.stdin is not None and proc.stdout is not None
+    proc.stdin.write(payload)
+    proc.stdin.close()
+
+    events: list[dict] = []
+    for line in proc.stdout:
+        line = line.rstrip()
         if not line:
             continue
         try:
-            events.append(json.loads(line))
+            e = json.loads(line)
         except json.JSONDecodeError:
-            pass
+            continue
+        events.append(e)
+        if on_event is not None:
+            try:
+                on_event(e)
+            except Exception as ex:                              # don't let a callback break the read loop
+                _warn(f"on_event callback raised: {ex}")
+    proc.wait()
+
+    if proc.returncode != 0:
+        err = proc.stderr.read() if proc.stderr else ""
+        if err.strip():
+            _warn(f"claude exited with code {proc.returncode}: {err.strip()[:500]}")
+
     return events
 
 def extract_session_id(events: list[dict]) -> str | None:
@@ -493,6 +566,9 @@ def extract_result(events: list[dict]) -> dict | None:
         if e.get("type") == "result":
             return e
     return None
+
+def budget_exceeded(result: dict | None) -> bool:
+    return bool(result) and result.get("subtype") == "error_max_budget_usd"
 
 def result_tokens(result: dict) -> tuple[int, int, int, int]:
     """Returns (input, cache_read, cache_creation, output). Sum of first three = total context tokens."""
@@ -532,11 +608,59 @@ def session_total_cost(root: Path, name: str) -> float:
     return total
 
 def save_turn(root: Path, name: str, turn: int, events: list[dict]):
+    """Write turn jsonl in a single pass (used for retroactive/error-path saves)."""
     turns_dir(root).mkdir(parents=True, exist_ok=True)
     path = turn_log_file(root, name, turn)
     with path.open("w") as f:
         for e in events:
             f.write(json.dumps(e) + "\n")
+
+
+def open_turn_writer(root: Path, name: str, turn: int) -> IO:
+    """Open the turn jsonl for progressive writes. Caller must close."""
+    turns_dir(root).mkdir(parents=True, exist_ok=True)
+    path = turn_log_file(root, name, turn)
+    return path.open("w")
+
+
+def make_stream_callback(
+    writer: IO,
+    *,
+    print_text: bool = True,
+    progress: bool = True,
+) -> Callable[[dict], None]:
+    """Return an on_event callback that writes jsonl progressively and streams visible output.
+
+    print_text: when True, assistant text blocks print to stdout as they arrive.
+    progress:   when True, tool_use / tool_result events print one-line notes to stderr.
+    """
+    def cb(e: dict) -> None:
+        writer.write(json.dumps(e) + "\n")
+        writer.flush()
+
+        t = e.get("type")
+        if t == "assistant" and print_text:
+            for b in e.get("message", {}).get("content", []) or []:
+                if b.get("type") == "text":
+                    sys.stdout.write(b.get("text", ""))
+                    sys.stdout.flush()
+                elif b.get("type") == "tool_use" and progress:
+                    name = b.get("name", "?")
+                    keys = list((b.get("input") or {}).keys())
+                    _progress(f"[coroutine] tool_use: {name}({', '.join(keys)})")
+        elif t == "user" and progress:
+            for b in e.get("message", {}).get("content", []) or []:
+                if b.get("type") == "tool_result":
+                    tid = (b.get("tool_use_id") or "")[:12]
+                    _progress(f"[coroutine] tool_result: {tid}")
+    return cb
+
+
+def _progress(msg: str) -> None:
+    """Progress line to stderr, dim in a tty so it doesn't compete with the stdout stream."""
+    if sys.stderr.isatty():
+        msg = f"\033[2m{msg}\033[0m"
+    print(msg, file=sys.stderr)
 
 def read_stdin_or_die() -> str:
     if sys.stdin.isatty():
@@ -551,6 +675,23 @@ def read_stdin_or_die() -> str:
 # Commands
 # ---------------------------------------------------------------------------
 
+def _delete_session_files(root: Path, name: str) -> None:
+    """Remove on-disk session bookkeeping. Used when create fails irrecoverably.
+
+    Turn jsonl files are intentionally preserved for post-mortem debugging.
+    """
+    for p in (session_file(root, name), meta_file(root, name),
+              hold_sentinel_path(root, name), send_lock_path(root, name)):
+        try:
+            p.unlink(missing_ok=True)
+        except OSError:
+            pass
+    # Pop from CURRENT stack if we put it there
+    stack = current_list(root)
+    if stack and stack[-1] == name:
+        current_pop(root)
+
+
 def cmd_create(args, root: Path):
     name = args.name
     if session_file(root, name).exists():
@@ -561,31 +702,46 @@ def cmd_create(args, root: Path):
     _emit_warnings(resolved)
     preamble = _load_preamble()
 
+    # Pre-assign UUID and persist before invoking claude, so a crash mid-create
+    # leaves a recoverable record. Uses --session-id (PoC 1 confirmed).
+    session_uuid = str(uuid.uuid4())
+    save_session(root, name, session_uuid, model)
+    current_push(root, name)
+
     turn = next_turn_number(root, name)
     effort_str = f" effort={resolved.effort.value}" if resolved.effort else ""
-    print(f"[coroutine] creating session '{name}' (model={model}{effort_str})...", file=sys.stderr)
-    events = run_claude(root, make_payload(preamble), resolved)
+    print(f"[coroutine] creating session '{name}' (model={model}{effort_str}) id={session_uuid[:8]}..",
+          file=sys.stderr)
+
+    writer = open_turn_writer(root, name, turn)
+    try:
+        # Preamble turn: don't stream preamble-ack text to stdout (low signal, high noise).
+        on_event = make_stream_callback(writer, print_text=False, progress=False)
+        events = run_claude(root, make_payload(preamble), resolved,
+                            session_id=session_uuid, on_event=on_event)
+    finally:
+        writer.close()
 
     result = extract_result(events)
     if result and result.get("is_error"):
+        if budget_exceeded(result):
+            cost = result.get("total_cost_usd", 0)
+            _delete_session_files(root, name)
+            die(f"session creation aborted: budget of ${_max_budget_usd()} exceeded (spent ${cost:.4f})")
         msg = result.get("result", "unknown error")
+        _delete_session_files(root, name)
         die(f"session creation failed: {msg}")
 
-    uuid = extract_session_id(events)
-    if not uuid:
-        die("failed to get session_id from claude output")
-
-    save_session(root, name, uuid, model)
-    save_turn(root, name, turn, events)
-    current_push(root, name)
+    reported = extract_session_id(events)
+    if reported and reported != session_uuid:
+        _warn(f"warning: claude reported session_id {reported[:8]}.. but we assigned {session_uuid[:8]}..")
 
     text = extract_text(events)
     cost = result["total_cost_usd"] if result else 0
-    print(f"[coroutine] session={uuid} turn={turn} cost=${cost:.4f}", file=sys.stderr)
+    print(f"[coroutine] session={session_uuid} turn={turn} cost=${cost:.4f}", file=sys.stderr)
     print(f"[coroutine] {extract_yield(text) or '(acknowledged)'}", file=sys.stderr)
 
-    # Turn 1 (optional): if stdin has content, send immediately
-    # Deprecated: use 'coro send <name>' for turn 1 instead.
+    # Turn 1 (optional, deprecated): if stdin has content, send immediately.
     if not sys.stdin.isatty():
         _warn("warning: 'coro create <name> < file' is deprecated; "
               "use 'coro send <name> < file' for turn 1")
@@ -594,16 +750,24 @@ def cmd_create(args, root: Path):
         if extra:
             turn = next_turn_number(root, name)
             print(f"[coroutine] sending initial content turn={turn}...", file=sys.stderr)
-            events = run_claude(root, make_payload(extra), resolved, resume_uuid=uuid)
-            save_turn(root, name, turn, events)
+
+            writer = open_turn_writer(root, name, turn)
+            try:
+                on_event = make_stream_callback(writer, print_text=True, progress=True)
+                events = run_claude(root, make_payload(extra), resolved,
+                                    resume_uuid=session_uuid, on_event=on_event)
+            finally:
+                writer.close()
 
             text = extract_text(events)
             result = extract_result(events)
             signal = extract_yield(text)
 
-            print(text)
             cost = result["total_cost_usd"] if result else 0
             print(f"\n[coroutine] turn={turn} cost=${cost:.4f}", file=sys.stderr)
+            if budget_exceeded(result):
+                _warn(f"warning: turn exceeded CORO_MAX_BUDGET_USD=${_max_budget_usd()} "
+                      f"(spent ${cost:.4f}); session remains usable")
             if signal:
                 print(f"[coroutine] {signal}", file=sys.stderr)
             else:
@@ -612,7 +776,7 @@ def cmd_create(args, root: Path):
 
 def cmd_send(root: Path, name: str | None):
     name = resolve_name(root, name)
-    uuid = load_session(root, name)
+    session_uuid = load_session(root, name)
     meta = load_meta(root, name)
     model = meta.get("model", _model())
     resolved = resolve(model, _effort_input())
@@ -633,16 +797,24 @@ def cmd_send(root: Path, name: str | None):
 
         effort_str = f" effort={resolved.effort.value}" if resolved.effort else ""
         print(f"[coroutine] resuming '{name}' turn={turn} model={model}{effort_str}...", file=sys.stderr)
-        events = run_claude(root, make_payload(content), resolved, resume_uuid=uuid)
-        save_turn(root, name, turn, events)
+
+        writer = open_turn_writer(root, name, turn)
+        try:
+            on_event = make_stream_callback(writer, print_text=True, progress=True)
+            events = run_claude(root, make_payload(content), resolved,
+                                resume_uuid=session_uuid, on_event=on_event)
+        finally:
+            writer.close()
 
         text = extract_text(events)
         result = extract_result(events)
         signal = extract_yield(text)
 
-        print(text)
         cost = result["total_cost_usd"] if result else 0
         print(f"\n[coroutine] turn={turn} cost=${cost:.4f}", file=sys.stderr)
+        if budget_exceeded(result):
+            _warn(f"warning: turn exceeded CORO_MAX_BUDGET_USD=${_max_budget_usd()} "
+                  f"(spent ${cost:.4f}); session remains usable — raise cap or continue smaller")
         if signal:
             print(f"[coroutine] {signal}", file=sys.stderr)
         else:
@@ -703,6 +875,10 @@ def cmd_status(root: Path, name: str | None):
     print(f"{'hold:':{W}}{hold_str}")
     print(f"{'tokens:':{W}}{tokens_str}")
     print(f"{'cost:':{W}}${total_cost:.4f} total")
+    if budget_exceeded(result):
+        last_cost = result.get("total_cost_usd", 0) if result else 0
+        cap = _max_budget_usd() or "?"
+        print(f"{'budget:':{W}}EXCEEDED — last turn spent ${last_cost:.4f} of ${cap} cap")
     print(f"{'yield:':{W}}{yield_str}")
 
     if not signal:
@@ -843,13 +1019,16 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Runtime config via env:\n"
-            "  CORO_MODEL   alias (opus|sonnet|haiku|best), canonical id, or [1m]-suffixed;\n"
-            "               unknown slugs pass through with a warning. Default: sonnet.\n"
-            "  CORO_EFFORT  low|medium|high|xhigh|max. If unset, the spec's per-model\n"
-            "               default is used (coro does not inherit CLAUDE_CODE_EFFORT_LEVEL).\n"
+            "  CORO_MODEL      alias (opus|sonnet|haiku|best), canonical id, or [1m]-suffixed;\n"
+            "                  unknown slugs pass through with a warning. Default: sonnet.\n"
+            "  CORO_EFFORT     low|medium|high|xhigh|max. If unset, the spec's per-model\n"
+            "                  default is used (coro does not inherit CLAUDE_CODE_EFFORT_LEVEL).\n"
             "  CORO_PROJECT    project root (default: auto-discover)\n"
             "  CORO_ADD_DIRS   colon-separated --add-dir paths\n"
-            "  CORO_TOKEN_WARN_RATIO / CORO_TOKEN_WARN / CORO_COST_WARN  override thresholds"
+            "  CORO_MAX_BUDGET_USD  per-turn budget cap (soft-fail in send, hard-fail in create)\n"
+            "  CORO_TOKEN_WARN_RATIO / CORO_TOKEN_WARN / CORO_COST_WARN  override thresholds\n\n"
+            "Subprocess env defaults (set when unset in parent):\n"
+            "  API_TIMEOUT_MS=1200000  BASH_MAX_TIMEOUT_MS=1200000"
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
