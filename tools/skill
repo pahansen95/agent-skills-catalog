@@ -1,0 +1,328 @@
+#!/usr/bin/env python3
+"""
+skill — lifecycle tool for the agent-skills-catalog.
+
+Usage:
+  skill install   <domain>/<name> [--dest <dir>]
+  skill uninstall <name>          [--dest <dir>]
+  skill reinstall <domain>/<name> [--dest <dir>]
+  skill list
+
+Source layout:
+  <repo>/catalog/<domain>/skills/<name>/
+
+Destination (default: ~/.claude/skills/):
+  <dest>/<name>/                 — installed skill tree (symlinks resolved)
+  <dest>/<name>/scripts/install    (optional)  — runs after copy at install
+  <dest>/<name>/scripts/uninstall  (optional)  — runs before delete at uninstall
+  <dest>/<name>/scripts/reinstall  (optional)  — drives reinstall; see below
+
+Lifecycle contracts:
+
+  install  (absent → present):
+    1. Copy source → dest (rsync -rL --delete, excluding dev artifacts).
+    2. If dest/scripts/install is executable, run it.
+
+  uninstall  (present → absent):
+    1. If dest/scripts/uninstall is executable, run it.
+    2. rm -rf dest.
+
+  reinstall  (present → present):
+    If the currently-installed tree has an executable scripts/reinstall:
+      1. Run it; capture stdout as newline-separated preserve list (paths
+         relative to the skill root). Trailing-slash entries preserve
+         subtrees; bare entries preserve a single path.
+      2. Copy source → dest, excluding the preserve list from --delete so
+         destination files at those paths survive (dest wins on conflict).
+      No install / uninstall hooks run on this branch.
+    Otherwise:
+      1. Run uninstall (hook + rm -rf).
+      2. Run install (copy + hook).
+
+Requires: rsync on PATH. Stdlib only; no third-party deps.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+CATALOG = REPO_ROOT / "catalog"
+DEFAULT_DEST = Path(os.path.expanduser("~/.claude/skills"))
+
+# Dev artifacts never copied into an installed skill.
+RSYNC_EXCLUDES = (".venv/", "__pycache__/", ".pytest_cache/", ".hypothesis/")
+
+
+class SkillError(Exception):
+    """Operator-facing error. main() prints to stderr and exits 1."""
+
+
+# ---------------------------------------------------------------------------
+# Path resolution
+# ---------------------------------------------------------------------------
+
+
+def parse_skill_ref(ref: str) -> tuple[str, str]:
+    """Split `domain/name` into (domain, name). Raises on malformed input."""
+    if "/" not in ref:
+        raise SkillError(
+            f"skill ref must be <domain>/<name>, got '{ref}' "
+            f"(e.g. 'coroutine/coro-develop')"
+        )
+    domain, name = ref.split("/", 1)
+    if not domain or not name or "/" in name:
+        raise SkillError(f"malformed skill ref '{ref}'")
+    return domain, name
+
+
+def source_dir(domain: str, name: str) -> Path:
+    return CATALOG / domain / "skills" / name
+
+
+def dest_dir(dest_root: Path, name: str) -> Path:
+    return dest_root / name
+
+
+# ---------------------------------------------------------------------------
+# Hooks
+# ---------------------------------------------------------------------------
+
+
+def hook_path(skill_dir: Path, hook_name: str) -> Path | None:
+    """Return the hook path if it exists and is executable, else None."""
+    p = skill_dir / "scripts" / hook_name
+    if p.is_file() and os.access(p, os.X_OK):
+        return p
+    return None
+
+
+def run_hook(hook: Path, *, capture_stdout: bool = False) -> str:
+    """Run a hook with cwd set to its containing scripts/ dir.
+
+    When capture_stdout is False, hook output streams to this process's
+    stdout/stderr. When True, stdout is captured and returned while stderr
+    still streams live.
+
+    Non-zero exit raises SkillError (aborts the lifecycle operation).
+    """
+    print(f"→ running hook: {hook}", file=sys.stderr)
+    kwargs: dict = {"cwd": hook.parent, "check": False}
+    if capture_stdout:
+        kwargs["stdout"] = subprocess.PIPE
+        kwargs["text"] = True
+    proc = subprocess.run([str(hook)], **kwargs)
+    if proc.returncode != 0:
+        raise SkillError(f"hook failed (exit {proc.returncode}): {hook}")
+    return proc.stdout if capture_stdout else ""
+
+
+def parse_preserve_list(stdout: str) -> list[str]:
+    """Parse reinstall hook stdout into a preserve list.
+
+    Format: one path per line, relative to skill root. Trailing slash =
+    preserve subtree. Blank lines and lines starting with '#' are ignored.
+    """
+    out: list[str] = []
+    for raw in stdout.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("/"):
+            raise SkillError(
+                f"preserve path must be relative to skill root, got '{line}'"
+            )
+        if ".." in Path(line).parts:
+            raise SkillError(
+                f"preserve path must not contain '..', got '{line}'"
+            )
+        out.append(line)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# rsync
+# ---------------------------------------------------------------------------
+
+
+def _rsync_base(src: Path, dst: Path) -> list[str]:
+    argv = ["rsync", "-rL", "--delete"]
+    for e in RSYNC_EXCLUDES:
+        argv += ["--exclude", e]
+    argv += [f"{src}/", f"{dst}/"]
+    return argv
+
+
+def rsync_copy(src: Path, dst: Path, preserve: list[str] | None = None) -> None:
+    """Copy src → dst with symlinks resolved and dev artifacts excluded.
+
+    When `preserve` is provided, each entry is protected on the receiver
+    via an rsync `--filter 'P <path>'` rule, so --delete won't remove it.
+    Trailing-slash entries protect the directory itself; rsync's filter
+    applies recursively when the pattern matches a directory.
+    """
+    argv = ["rsync", "-rL", "--delete"]
+    for e in RSYNC_EXCLUDES:
+        argv += ["--exclude", e]
+    for p in preserve or ():
+        argv += ["--filter", f"P /{p}"]
+    argv += [f"{src}/", f"{dst}/"]
+    proc = subprocess.run(argv, check=False)
+    if proc.returncode != 0:
+        raise SkillError(f"rsync failed (exit {proc.returncode})")
+
+
+# ---------------------------------------------------------------------------
+# Verbs
+# ---------------------------------------------------------------------------
+
+
+def do_install(ref: str, dest_root: Path) -> None:
+    domain, name = parse_skill_ref(ref)
+    src = source_dir(domain, name)
+    dst = dest_dir(dest_root, name)
+
+    if not src.is_dir():
+        raise SkillError(f"skill source not found: {src}")
+
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.mkdir(exist_ok=True)
+
+    print(f"installing {domain}/{name} → {dst}", file=sys.stderr)
+    rsync_copy(src, dst)
+
+    hook = hook_path(dst, "install")
+    if hook is not None:
+        run_hook(hook)
+
+    print(f"installed {name} → {dst}")
+
+
+def do_uninstall(name: str, dest_root: Path) -> None:
+    # Accept either bare <name> or <domain>/<name> for symmetry with install.
+    if "/" in name:
+        _, name = parse_skill_ref(name)
+    dst = dest_dir(dest_root, name)
+    if not dst.exists():
+        print(f"not installed: {dst}", file=sys.stderr)
+        return
+
+    hook = hook_path(dst, "uninstall")
+    if hook is not None:
+        # Uninstall hooks are advisory — a failure should not strand the
+        # skill dir on disk. Log and continue.
+        try:
+            run_hook(hook)
+        except SkillError as e:
+            print(f"warning: {e} (continuing with removal)", file=sys.stderr)
+
+    shutil.rmtree(dst)
+    print(f"uninstalled {dst}")
+
+
+def do_reinstall(ref: str, dest_root: Path) -> None:
+    domain, name = parse_skill_ref(ref)
+    src = source_dir(domain, name)
+    dst = dest_dir(dest_root, name)
+
+    if not src.is_dir():
+        raise SkillError(f"skill source not found: {src}")
+
+    # New install if absent — no branching needed.
+    if not dst.exists():
+        do_install(ref, dest_root)
+        return
+
+    hook = hook_path(dst, "reinstall")
+
+    if hook is None:
+        print(f"reinstall (plain): {name}", file=sys.stderr)
+        do_uninstall(name, dest_root)
+        do_install(ref, dest_root)
+        return
+
+    # Hook branch: preserve paths across the copy; skip install/uninstall hooks.
+    print(f"reinstall (preserving state): {name}", file=sys.stderr)
+    preserve_out = run_hook(hook, capture_stdout=True)
+    preserve = parse_preserve_list(preserve_out)
+    if preserve:
+        print(f"preserving {len(preserve)} path(s): {', '.join(preserve)}",
+              file=sys.stderr)
+    rsync_copy(src, dst, preserve=preserve)
+    print(f"reinstalled {name} → {dst}")
+
+
+def do_list() -> None:
+    """Emit a newline-separated list of '<domain>/<name>' refs to stdout.
+
+    Pipe-friendly: no decoration, no header, no trailing annotations.
+    Decorative output and install-state markers belong in a separate verb.
+    """
+    if not CATALOG.is_dir():
+        return
+    for domain_dir in sorted(CATALOG.iterdir()):
+        skills = domain_dir / "skills"
+        if not skills.is_dir():
+            continue
+        for skill in sorted(skills.iterdir()):
+            if (skill / "SKILL.md").is_file():
+                print(f"{domain_dir.name}/{skill.name}")
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="skill",
+        description="Lifecycle tool for the agent-skills-catalog.",
+    )
+    parser.add_argument(
+        "--dest",
+        type=Path,
+        default=DEFAULT_DEST,
+        help=f"install destination (default: {DEFAULT_DEST})",
+    )
+    sub = parser.add_subparsers(dest="verb", required=True)
+
+    p_install = sub.add_parser("install", help="Install a skill")
+    p_install.add_argument("ref", help="<domain>/<name>")
+
+    p_uninstall = sub.add_parser("uninstall", help="Uninstall a skill")
+    p_uninstall.add_argument("name", help="<name> (not <domain>/<name>)")
+
+    p_reinstall = sub.add_parser("reinstall", help="Reinstall a skill")
+    p_reinstall.add_argument("ref", help="<domain>/<name>")
+
+    sub.add_parser("list", help="List catalog + install state")
+
+    args = parser.parse_args(argv)
+
+    try:
+        if not shutil.which("rsync"):
+            raise SkillError("rsync not found on PATH")
+
+        if args.verb == "install":
+            do_install(args.ref, args.dest)
+        elif args.verb == "uninstall":
+            do_uninstall(args.name, args.dest)
+        elif args.verb == "reinstall":
+            do_reinstall(args.ref, args.dest)
+        elif args.verb == "list":
+            do_list()
+    except SkillError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
