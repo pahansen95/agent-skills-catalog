@@ -14,13 +14,20 @@
 #   just log <name> [turn]           # raw jsonl for a turn
 
 python := ".venv/bin/python"
+pytest := ".venv/bin/pytest"
 script := justfile_directory() / "coroutine.py"
+tests_dir := justfile_directory() / ".." / ".." / ".." / "tests"
 
-# One-time setup: pyenv local, uv venv (stdlib only — no pip installs needed)
+# One-time setup: pyenv local, uv venv, install test deps (pytest + hypothesis)
 setup:
     pyenv local 3.13
     uv venv --python 3.13
-    @echo "venv ready at .venv"
+    uv pip install --python .venv/bin/python pytest hypothesis
+    @echo "venv ready at .venv (pytest + hypothesis installed)"
+
+# Run the test suite
+test *args:
+    {{ pytest }} {{ tests_dir }} {{ args }}
 
 # Create a new session (sends embedded preamble; pipe content for turn 1)
 create name:
