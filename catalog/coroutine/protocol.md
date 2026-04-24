@@ -1,15 +1,39 @@
 # Coroutine Protocol
 
-The wire-level specification for orchestrator ↔ worker communication.
+The full design specification: two actors, their state machines, the messages
+they exchange, and the supporting machinery (session storage, overlays).
+
+Authoritative. When a role doc, the SKILL, or the CLI references protocol
+behavior, the definitions live here.
+
+## Architecture
+
+Three layers:
+
+| Layer | What it is | Where it lives |
+|---|---|---|
+| **Specification** | The protocol — what the system is | This document |
+| **Operating discipline** | How each actor behaves within the spec | [role/orchestrator.md](role/orchestrator.md), [role/worker.md](role/worker.md) |
+| **Bootstrap** | How to enter a role in a given session | `skills/coro-develop/SKILL.md` |
+
+Each layer depends only on layers above it. Protocol stands alone. Role docs
+depend on protocol. SKILL depends on both.
 
 ## Roles
 
-**Orchestrator** — the primary agent session. Drives the worker. Interprets
-results. Decides next action. Escalates to the human when blocked on decisions
-only they can make.
+Two actors with asymmetric relationships to this document.
 
-**Worker** — a dedicated agent session scoped to one phase of work. Implements,
-tests, and reports. Has no awareness of other phases or the broader project.
+**Orchestrator** — primary agent session. Reads this spec in full. Drives
+the worker, interprets YIELD, decides next action, escalates to human.
+Discipline in [role/orchestrator.md](role/orchestrator.md).
+
+**Worker** — dedicated session scoped to one phase. Does **not** read this
+spec; reads a self-contained role doc ([role/worker.md](role/worker.md))
+distilling the worker's slice. Implements, tests, reports. No awareness of
+other phases, orchestration state, or the project.
+
+The asymmetry is deliberate: the orchestrator drives the state machine from
+outside, the worker only honors its output contract and transitions.
 
 ## Worker output contract
 
@@ -21,15 +45,14 @@ YIELD: <STATUS> | <summary>
 
 ### Status values
 
-The following YIELD statuses are what the worker may emit while in the WORKING
-state. Each emission triggers a transition in the Worker FSM (see below) and a
-corresponding response from the orchestrator.
+Statuses the worker may emit while in `WORKING`. Each emission triggers a
+Worker FSM transition (below) and an orchestrator response.
 
 | Status | Meaning | Orchestrator action |
 |---|---|---|
 | `DONE` | Work complete or ready for next instruction | Send next instruction or declare phase complete |
-| `BLOCKED` | Cannot proceed — needs a decision | Read summary, decide, send `DECIDE: <answer>` |
-| `FAILED` | Something broke — details in summary | Read error, send `FIX: <description>` or escalate |
+| `BLOCKED` | Cannot proceed — needs a decision | Decide, send `DECIDE: <answer>` |
+| `FAILED` | Something broke — details in summary | Send `FIX: <description>` or escalate |
 | `RUNNING` | Work in progress, will continue | Send `CONTINUE` |
 | `CHECK` | Asks orchestrator to verify an artifact | Inspect, send `VERIFY: <result>` |
 
@@ -45,8 +68,8 @@ YIELD: CHECK | please verify loop device mounts correctly at /mnt/test
 
 ## Worker FSM
 
-The worker operates as a mechanical state machine. States reflect runtime
-observables (message received, YIELD emitted), not semantic intent.
+Mechanical state machine. States reflect runtime observables (messages
+received, YIELDs emitted), not semantic intent.
 
 ### States
 
@@ -108,8 +131,8 @@ observables (message received, YIELD emitted), not semantic intent.
 
 ## Orchestrator FSM
 
-The orchestrator maintains one FSM instance per managed worker session. States
-reflect what the orchestrator observes and what action it is taking.
+One FSM instance per managed worker session. States reflect what the
+orchestrator observes and the action it's taking.
 
 ### States
 
@@ -191,27 +214,52 @@ reflect what the orchestrator observes and what action it is taking.
 
 ## Session-state overlays
 
-Overlays are out-of-band session state managed by the orchestrator. They do
-not affect the worker's YIELD vocabulary or FSM. Workers have no awareness
-of overlays; they are purely an orchestrator-side mechanism.
+Out-of-band session state. The CLI maintains these on behalf of the
+orchestrator; they don't affect the worker's YIELD vocabulary or FSM.
+Workers have no awareness — purely orchestrator-side machinery.
+
+Semantics of each overlay file listed in §Session storage below.
 
 ### Hold sentinel
 
-**File**: `.cache/sessions/<name>.hold`
+**File**: `.cache/coro/<slug>/hold`
 
-**Format**: first line is the optional reason string (may be empty); second
-line is an ISO-8601 UTC timestamp written at hold time (useful for diagnosing
-stale holds).
+**Format**: line 1 is the optional reason string (may be empty); line 2 is
+an ISO-8601 UTC timestamp written at hold time (diagnoses stale holds).
 
-**Who writes it**: the orchestrator, via `coro hold <name> [<reason>]`.
-**Who reads it**: `coro status` (non-destructively) and `coro send` (clears
-it before acquiring the send lock).
+**Writer**: orchestrator via `coro hold <name-or-slug> [<reason>]`.
+**Readers**: `coro status` (non-destructive), `coro send` (clears before
+acquiring the send lock).
 
-- `coro hold` writes idempotently (overwrites if already held).
-- `coro unhold` removes the sentinel; no error if absent.
-- `coro send` auto-clears the sentinel before the send lock is acquired and
-  emits a stderr note: `note: cleared hold on session '<name>' (reason: ...)`.
-- `coro status` surfaces hold state on a `hold:` line in its output block.
+- `coro hold` writes idempotently.
+- `coro unhold` removes; no error if absent.
+- `coro send` auto-clears before acquiring the lock; stderr: `note: cleared
+  hold on session '<slug>' (reason: ...)`.
+- `coro status` surfaces state on a `hold:` line.
+
+### Send lock
+
+**File**: `.cache/coro/<slug>/lock`
+
+Fcntl exclusive lock for the duration of `coro send`. A concurrent second
+send to the same slug fails immediately. `coro status` reports
+`sending: yes` via a non-blocking shared-lock probe.
+
+The file persists between sends; only its fcntl state matters.
+
+### CURRENT stack
+
+**File**: `.cache/coro/CURRENT`
+
+Newline-delimited stack of **slugs** (top-to-bottom). Supports bare-slug
+dispatch: `coro send` / `status` / `turns` / `log` resolve to the top when
+no argument is given. Explicit `<name-or-slug>` always wins.
+
+- `coro create <name>` auto-pushes the generated slug.
+- `coro use <name-or-slug>` pushes an existing session's slug (resolving
+  ambiguity per §Name resolution).
+- `coro pop` removes and returns the top slug.
+- `coro list` prints the stack, one slug per line.
 
 ## Orchestrator messages
 
@@ -230,19 +278,26 @@ it before acquiring the send lock).
 CREATE → [YIELD loop] → COMPLETE
 ```
 
-**CREATE** — first invocation. Orchestrator sends the protocol preamble
-(this file, loaded by the tool at runtime) then the phase scope and initial
-instruction. Session UUID is captured and stored for resume.
+**CREATE** — CLI generates the session slug (`<name>_<unix-seconds>`),
+establishes and persists the claude session UUID, sends the worker role
+doc + phase scope + initial instruction. Worker acknowledges, enters
+`IDLE`. The slug is returned to the caller and pushed onto `CURRENT`.
+(The orchestrator is separately initialized at skill activation, having
+already read this spec and its role doc.)
 
-**YIELD loop** — each subsequent turn: orchestrator reads YIELD signal,
-decides next message, sends via `--resume <uuid>`.
+**YIELD loop** — each turn: worker emits YIELD, orchestrator reads it,
+decides the next message, sends. CLI resumes with `--resume <uuid>`.
 
-**COMPLETE** — orchestrator declares phase done when all success criteria met.
+**COMPLETE** — orchestrator declares done when success criteria met.
+Orchestrator-side state; no CLI action marks it.
 
 ## Orchestrator turn logic
 
+**Agent behavior, not tool behavior.** The CLI parses YIELD and surfaces it,
+but does not decide what to send. That is the orchestrator's reasoning:
+
 ```
-output = send(session, message)
+output = coro send <name> <<< <message>
 signal = parse_yield(output)   # last line: "YIELD: STATUS | summary"
 
 match signal.status:
@@ -254,17 +309,70 @@ match signal.status:
   CHECK   → inspect artifact → send "VERIFY: <result>"
 ```
 
-Human escalation: surface to the human when BLOCKED on questions requiring
-their input (credentials, design decisions, infrastructure access).
+Full discipline — escalation, quality gates, cost responses — lives in
+[role/orchestrator.md](role/orchestrator.md).
+
+Escalate to human when `BLOCKED` requires their input (credentials, design
+decisions, infrastructure access).
 
 ## Session storage
 
+Sessions are resources. The **slug** is the identity; the **name** is a
+human-readable label.
+
+- **slug** = `<name>_<unix-seconds>`, generated by the CLI at `coro create`.
+  Canonical. Appears on disk, in `CURRENT`, in meta, and in diagnostic
+  output.
+- **name** = user-supplied label. Resolved to a slug at command time.
+
+All state lives under a per-session directory keyed by slug:
+
 ```
-<project>/.cache/sessions/<name>.uuid    # session UUID
-<project>/.cache/sessions/<name>.meta   # model used
-<project>/.cache/sessions/<name>.hold   # hold sentinel (orchestrator-only)
-<project>/.cache/turns/<name>-NNN.jsonl # raw stream-json per turn
+<project>/.cache/coro/<slug>/
 ```
 
-Project root is discovered by walking up from cwd until `.cache/sessions/`
-is found.
+CLI owns the layout; workers don't touch it. Project root is discovered by
+walking up from cwd until `.cache/coro/` is found.
+
+### Shared bookkeeping
+
+Core identity and history. Required for any session.
+
+| Path | Purpose |
+|---|---|
+| `.cache/coro/<slug>/uuid` | Stable claude session identifier, persisted before claude spawns |
+| `.cache/coro/<slug>/meta` | Session metadata — model slug used at create time |
+| `.cache/coro/<slug>/turns/NNN.jsonl` | Raw stream-json events per turn, written progressively |
+
+### Orchestrator-side overlays
+
+Orchestrator state / CLI affordances. Workers have no awareness.
+
+| Path | Purpose |
+|---|---|
+| `.cache/coro/<slug>/hold` | Hold sentinel — session paused awaiting human input |
+| `.cache/coro/<slug>/lock` | Fcntl exclusive lock during `coro send` — prevents concurrent sends |
+| `.cache/coro/CURRENT` | Stack of **slugs** for bare-slug dispatch |
+
+### Name resolution
+
+Commands that take a session argument accept either a slug or a name.
+Resolution rules, applied in order:
+
+1. **Exact slug match** (directory `.cache/coro/<arg>/` exists) → use it.
+2. **Name match** — find slugs where the `<name>` part (everything before
+   the final `_<digits>`) equals the argument:
+   - Zero matches → error (`no session matches '<name>'`).
+   - One match → use it.
+   - Multiple matches → **error, fail fast**. List the candidate slugs.
+     Caller must specify a slug.
+
+Ambiguity is never resolved silently — not by recency, not by "current"
+state. The user disambiguates explicitly.
+
+### Display convention
+
+- Authoritative output (create announcement, `status` header, `turns`
+  listings, log paths) shows the slug.
+- Conversational output (progress lines, `list` rows, error messages) may
+  show the name when unambiguous. When ambiguous, show the slug.
