@@ -538,14 +538,25 @@ def write_hold(root: Path, slug: str, reason: str) -> None:
 
 
 def clear_hold(root: Path, slug: str) -> str | None:
-    """Remove sentinel; return prior reason if any (for logging)."""
+    """Remove sentinel and return the prior reason.
+
+    Returns:
+      - None if no sentinel existed (session was not held).
+      - "" if the sentinel existed but had no reason.
+      - The reason string if the sentinel had one.
+
+    Callers distinguish "was held, no reason" (empty string, truthy check
+    false but "is not None" true) from "was not held" (None).
+    """
     p = hold_sentinel_path(root, slug)
     if not p.exists():
         return None
     text = p.read_text()
     p.unlink()
     lines = text.splitlines()
-    return lines[0] if lines and lines[0].strip() else None
+    if lines and lines[0].strip():
+        return lines[0]
+    return ""
 
 
 def read_hold(root: Path, slug: str) -> tuple[bool, str]:
