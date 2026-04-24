@@ -2,3 +2,8 @@
 .venv/
 .python-version
 __pycache__/
+
+# hooks/ is mounted as a worktree of meta/hooks (see `just _setup-hooks`).
+# Ignoring it on trunk prevents accidental `git add` of the nested
+# worktree as an embedded repo.
+/hooks/
