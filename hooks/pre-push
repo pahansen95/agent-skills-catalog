@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# pre-push: scan all commits about to be pushed for AI ownership claims.
+# Defense-in-depth against commit-msg bypasses (--no-verify, amends, hook swaps).
+set -euo pipefail
+
+# shellcheck source=lib/ai-attribution-pattern.sh
+source "$(dirname "$0")/lib/ai-attribution-pattern.sh"
+
+zero='0000000000000000000000000000000000000000'
+violations=0
+
+# Stdin format: <local_ref> <local_sha> <remote_ref> <remote_sha> per line.
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [ -z "$local_sha" ] && continue
+    [ "$local_sha" = "$zero" ] && continue   # branch deletion
+
+    if [ "$remote_sha" = "$zero" ]; then
+        # New ref: scan every commit reachable from local_sha that isn't
+        # already on any remote ref.
+        range_args=( "$local_sha" --not --remotes )
+    else
+        range_args=( "$remote_sha..$local_sha" )
+    fi
+
+    while read -r sha; do
+        [ -z "$sha" ] && continue
+        if git log -1 --format=%B "$sha" | grep -iqE "$AI_ATTRIBUTION_PATTERN"; then
+            echo "error: commit $sha contains AI ownership claim:" >&2
+            git log -1 --format='  %h %s' "$sha" >&2
+            git log -1 --format=%B "$sha" | grep -inE "$AI_ATTRIBUTION_PATTERN" >&2 | sed 's/^/    /'
+            violations=$((violations + 1))
+        fi
+    done < <(git rev-list "${range_args[@]}")
+done
+
+if [ "$violations" -gt 0 ]; then
+    echo >&2
+    echo "$violations commit(s) blocked from push." >&2
+    echo "Amend or rebase to remove the attribution, then retry." >&2
+    exit 1
+fi

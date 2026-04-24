@@ -19,3 +19,15 @@ Prefer explicit, inspectable operations over convenient shorthands to minimize u
 ## Agents
 
 The project is developed with Agents in mind. Let the agent be your CLI: if you run your work process through the agent then it can automate administrative processes & other boilerplate. Don't offload critical thinking to the agent; it is a computer system & accountability cannot be transferred from you to it!
+
+Authorship of work in this repo is yours. Do not include AI attribution in commit messages — no `Co-Authored-By` trailers naming AI assistants, no "Generated with" watermarks, no 🤖 markers. The AI is a tool, not an author.
+
+## Git Hooks
+
+Repository-tracked hooks live in `hooks/` and enforce the no-attribution rule above. Activate them per-clone:
+
+```sh
+git config core.hooksPath hooks
+```
+
+See [`hooks/README.md`](hooks/README.md) for what's enforced and how to extend the deny list.

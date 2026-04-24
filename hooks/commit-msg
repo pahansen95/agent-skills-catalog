@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# commit-msg: reject AI ownership claims in commit messages.
+# Pairs with hooks/pre-push (defense-in-depth).
+set -euo pipefail
+
+msg_file="${1:?missing commit message file}"
+
+# shellcheck source=lib/ai-attribution-pattern.sh
+source "$(dirname "$0")/lib/ai-attribution-pattern.sh"
+
+if grep -iqE "$AI_ATTRIBUTION_PATTERN" "$msg_file"; then
+    echo "error: commit message contains AI ownership claim or attribution" >&2
+    echo "       (Co-Authored-By trailer, watermark, or 'Generated with' line)" >&2
+    echo >&2
+    echo "Offending lines:" >&2
+    grep -inE "$AI_ATTRIBUTION_PATTERN" "$msg_file" >&2 | sed 's/^/  /'
+    echo >&2
+    echo "Strip the attribution and retry." >&2
+    exit 1
+fi
