@@ -1,11 +1,20 @@
 #!/usr/bin/env bash
+# Entry point for the coro-develop skill. Resolves its own location via
+# BASH_SOURCE, then execs the skill's venv python against coroutine.py.
+# Works from any cwd.
+set -euo pipefail
+
 declare CONTEXT; CONTEXT="$( cd -- "${BASH_SOURCE[0]%/*}" && pwd )"; declare -r CONTEXT
 [[ -d "${CONTEXT}" && "${CONTEXT##*/}" == "scripts" ]] || {
   printf '%s: %s\n' 'Bad Context' "${CONTEXT}" >&2
   exit 1
 }
-command -v just &>/dev/null || {
-  printf '%s\n' 'error: just is not in PATH' >&2
+
+VENV_PY="${CONTEXT}/.venv/bin/python"
+[[ -x "${VENV_PY}" ]] || {
+  printf 'error: venv python not found at %s\n' "${VENV_PY}" >&2
+  printf '  run the skill install hook: %s/install\n' "${CONTEXT}" >&2
   exit 1
 }
-exec just --justfile "${CONTEXT}/Justfile" --working-directory . "$@"
+
+exec "${VENV_PY}" "${CONTEXT}/coroutine.py" "$@"

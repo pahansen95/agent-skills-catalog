@@ -23,13 +23,14 @@ def test_preamble_does_not_include_protocol(coro_module):
 
 
 def test_preamble_missing_role_doc_raises(coro_module, monkeypatch, tmp_path):
-    """If role/worker.md is missing, die() raises CoroError."""
-    # Monkey-patch __file__ to point at a tmp location without the role doc
-    fake_script = tmp_path / "fake_src" / "coroutine.py"
-    fake_script.parent.mkdir(parents=True)
+    """If SKILL.md exists (skill root resolves) but role/worker.md is missing,
+    _load_preamble raises CoroError via die()."""
+    skill_root = tmp_path / "broken-skill"
+    (skill_root / "scripts").mkdir(parents=True)
+    (skill_root / "SKILL.md").write_text("# sentinel")
+    fake_script = skill_root / "scripts" / "coroutine.py"
     fake_script.write_text("# placeholder")
-    # role/worker.md would need to exist at fake_src/../role/worker.md
-    # since it doesn't, _load_preamble should fail
+    # role/worker.md intentionally absent
 
     monkeypatch.setattr(coro_module, "__file__", str(fake_script))
     with pytest.raises(coro_module.CoroError, match="role/worker.md not found"):

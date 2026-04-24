@@ -5,7 +5,7 @@ description: >
   driving a stateful worker through a phase of implementation work —
   creating the session, sending messages, interpreting YIELD, enforcing
   quality gates. Activate with /coro-develop.
-compatibility: Requires Python 3.13 (pyenv), uv, just, and the claude CLI in PATH
+compatibility: Requires the claude CLI on PATH. Python 3.13 and uv are required at install time only.
 ---
 
 Bootstraps this session into the **orchestrator role** of a coroutine. After
@@ -14,6 +14,30 @@ discipline in your role doc.
 
 This SKILL does not define what coroutine orchestration is. That lives in
 the protocol and role docs, which you'll read as part of bootstrap.
+
+## Skill layout
+
+All paths in this document are relative to the skill root — the directory
+containing this `SKILL.md`. The installer resolves the absolute path at
+install time; you'll be told the skill base directory when activated.
+
+```
+<skill_root>/
+├── SKILL.md                 this file
+├── protocol.md              authoritative spec (read in bootstrap)
+├── role/
+│   ├── orchestrator.md      your operating discipline (read in bootstrap)
+│   └── worker.md            sent to workers at session create; read it if
+│                            you want to see what your workers see
+├── scripts/
+│   ├── coro                 the CLI — invoke as <skill_root>/scripts/coro
+│   └── coroutine.py         implementation
+└── templates/               phase-spec scaffolds consumed by `coro new-phase`
+```
+
+The CLI is **not** on PATH. Invoke it by its in-tree path:
+`<skill_root>/scripts/coro <subcommand>`. Alias it in your own shell if you
+want shorter invocations.
 
 ## Bootstrap procedure
 
@@ -34,29 +58,19 @@ escalation, polling, cost, anti-patterns.
 The role cross-references the protocol — doesn't restate it. You need both
 in context.
 
-### 3. Verify the `coro` CLI
+### 3. Proceed as orchestrator
 
-```bash
-which coro      # should resolve to scripts/coro
-coro --help
+Drive work per [`role/orchestrator.md`](./role/orchestrator.md). Invoke the
+CLI as `<skill_root>/scripts/coro <subcommand>`. Subcommands (`create`,
+`send`, `status`, `turns`, `log`, `use`, `pop`, `list`, `new-phase`,
+`hold`, `unhold`) are self-documented:
+
+```
+<skill_root>/scripts/coro --help
+<skill_root>/scripts/coro <subcommand> --help
 ```
 
-One-time setup if needed:
-
-```bash
-coro setup      # creates venv, sets Python version; idempotent
-```
-
-`coro` is the only tool for coroutine operations. Subcommands (`create`,
-`send`, `status`, `turns`, `log`, `use`, `pop`, `list`, `new-phase`, `hold`,
-`unhold`) are self-documented via `coro --help` and `coro <cmd> --help`.
 Refer to CLI help for command-level detail, not this SKILL.
-
-### 4. Proceed as orchestrator
-
-Drive work per [`role/orchestrator.md`](./role/orchestrator.md). The worker
-role ([`role/worker.md`](./role/worker.md)) is sent to workers on session
-create by the CLI — available if you want to see what your workers see.
 
 ## Environment variables
 
@@ -71,8 +85,9 @@ Set before invoking `coro`. Full list: `coro --help`. Common:
 
 ## Deactivation
 
-No explicit deactivate. Sessions persist in `.cache/coro/<slug>/` and are
-resumable via `coro send` or inspectable via `coro status`.
+No explicit deactivate. Sessions persist in `.cache/coro/<slug>/` under
+your project root and are resumable via `coro send` or inspectable via
+`coro status`.
 
 Stepping away with in-flight work:
 - Declare `COMPLETE` (stop sending, report to human), or
