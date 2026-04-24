@@ -52,14 +52,13 @@ def test_extract_yield_negative_cases(coro_module, text):
     assert coro_module.extract_yield(text) is None
 
 
-def test_extract_yield_scans_last_line_only_if_last_has_yield(coro_module):
-    """Extractor scans from end — if last line is YIELD, return it."""
+def test_extract_yield_finds_yield_anywhere_scanning_from_end(coro_module):
+    """extract_yield scans lines from the end; returns the first YIELD it finds.
+
+    If the YIELD line is not the last line (some trailing content appears after),
+    the extractor still finds it while walking backwards.
+    """
     text = "YIELD: DONE | first\nsome other content"
-    # Not ending in YIELD — should return None since the loop only returns
-    # first YIELD found from the end... actually the implementation walks all lines,
-    # so it finds "YIELD: DONE | first" eventually. Let's check.
-    # Actually re-reading: `for line in reversed(...): if line.startswith("YIELD:"): return`
-    # So it DOES find the earlier YIELD even if not last.
     assert coro_module.extract_yield(text) == "YIELD: DONE | first"
 
 
