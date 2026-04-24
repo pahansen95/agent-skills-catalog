@@ -24,10 +24,21 @@ Authorship of work in this repo is yours. Do not include AI attribution in commi
 
 ## Git Hooks
 
-Repository-tracked hooks live in `hooks/` and enforce the no-attribution rule above. Activate them per-clone:
+Repository-tracked hooks enforce the no-attribution rule above. They live
+on the **`meta/hooks`** orphan branch (no shared history with `trunk`) and
+are mounted into the `hooks/` directory on `trunk` via a git worktree.
+
+Set up per-clone:
 
 ```sh
-git config core.hooksPath hooks
+just _setup-hooks
 ```
 
-See [`hooks/README.md`](hooks/README.md) for what's enforced and how to extend the deny list.
+That target is idempotent. It does two things:
+
+1. `git worktree add hooks meta/hooks` — mounts the orphan branch at `hooks/`.
+2. `git config core.hooksPath hooks` — points git at the mounted hooks.
+
+See [`hooks/README.md`](hooks/README.md) (on the `meta/hooks` branch) for
+what's enforced and how to extend the deny list. To edit hooks, `cd hooks/`
+— you're now on the `meta/hooks` branch; commits land there, not on `trunk`.

@@ -1,5 +1,19 @@
 skills_dir := "~/.claude/skills"
 
+# Per-clone setup: mount the meta/hooks orphan branch as a worktree at
+# hooks/ and point core.hooksPath at it. Idempotent — safe to re-run.
+# The leading underscore marks this as clone-setup, not daily-use.
+_setup-hooks:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -e hooks/.git ]; then
+        echo "hooks/ worktree already mounted"
+    else
+        git worktree add hooks meta/hooks
+    fi
+    git config core.hooksPath hooks
+    echo "hooks active: core.hooksPath=$(git config core.hooksPath)"
+
 # List all available domain/skill slugs.
 list:
     #!/usr/bin/env bash
