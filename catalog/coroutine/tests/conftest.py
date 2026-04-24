@@ -5,8 +5,8 @@ this avoids packaging and keeps the source tree unchanged.
 """
 from __future__ import annotations
 
+import argparse
 import importlib.util
-import sys
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
@@ -14,6 +14,34 @@ import pytest
 
 
 _SRC = Path(__file__).parent.parent / "src" / "coroutine.py"
+
+# All CORO_* and CC-related env vars that tests must start clean each run.
+# Centralized here so adding a new env knob in one place cleans it up for all
+# tests. Individual tests still setenv what they specifically need.
+_CLEAN_ENV_VARS = (
+    "CORO_MODEL",
+    "CORO_EFFORT",
+    "CORO_PROJECT",
+    "CORO_ADD_DIRS",
+    "CORO_MAX_BUDGET_USD",
+    "CORO_TOKEN_WARN",
+    "CORO_TOKEN_WARN_RATIO",
+    "CORO_COST_WARN",
+    "CLAUDE_CODE_DISABLE_1M_CONTEXT",
+    "API_TIMEOUT_MS",
+    "BASH_MAX_TIMEOUT_MS",
+)
+
+
+@pytest.fixture(autouse=True)
+def _clean_coro_env(monkeypatch):
+    """Autouse: scrub CORO_* and claude-env knobs before every test.
+
+    Eliminates order-dependence from ambient developer env or test-to-test
+    bleed. Tests that need a specific value call monkeypatch.setenv.
+    """
+    for k in _CLEAN_ENV_VARS:
+        monkeypatch.delenv(k, raising=False)
 
 
 @pytest.fixture(scope="session")
@@ -36,8 +64,8 @@ def tmp_project(tmp_path: Path) -> Path:
 class ScriptedRunner:
     """Test ProcessRunner that yields canned stream-json events.
 
-    Captures argv, cwd, env, and stdin_payload from the last call so tests can
-    assert on how the runner was invoked.
+    Captures argv, cwd, env, and stdin_payload per call so tests can assert
+    on how the runner was invoked.
 
     Accepts either:
       - a static list of events (same response every call), or
@@ -92,7 +120,7 @@ def fake_clock():
     """A monotonically-advancing clock for deterministic slug generation.
 
     Returns a callable compatible with time.time (returns float seconds).
-    Start at 1_700_000_000 (Nov 2023) so slugs look realistic, and advance
+    Starts at 1_700_000_000 (Nov 2023) so slugs look realistic, and advances
     by 1 second per call.
     """
     class _Clock:
@@ -107,37 +135,107 @@ def fake_clock():
     return _Clock()
 
 
-def ok_result_event(cost_usd: float = 0.01, **extra) -> dict:
-    """Build a minimal successful result event for test canned responses."""
-    base = {
-        "type": "result",
-        "subtype": "success",
-        "is_error": False,
-        "total_cost_usd": cost_usd,
-        "usage": {
-            "input_tokens": 10,
-            "cache_read_input_tokens": 0,
-            "cache_creation_input_tokens": 0,
-            "output_tokens": 5,
-        },
-        "modelUsage": {
-            "claude-haiku-4-5-20251001": {
-                "contextWindow": 200_000,
-                "maxOutputTokens": 64_000,
-            }
-        },
-    }
-    base.update(extra)
-    return base
+# ---------------------------------------------------------------------------
+# Event builders — importable helpers for scripted runners
+# ---------------------------------------------------------------------------
+
+def system_event(session_id: str) -> dict:
+    return {"type": "system", "session_id": session_id}
 
 
 def assistant_event(text: str) -> dict:
-    """Build an assistant event with a single text block."""
+    """Assistant event with a single text block."""
     return {
         "type": "assistant",
         "message": {"content": [{"type": "text", "text": text}]},
     }
 
 
-def system_event(session_id: str) -> dict:
-    return {"type": "system", "session_id": session_id}
+def tool_use_event(name: str, input_keys: list[str] | None = None, tool_use_id: str = "toolu_01abc") -> dict:
+    """Assistant event with a single tool_use block."""
+    keys = input_keys or ["pattern"]
+    return {
+        "type": "assistant",
+        "message": {
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": tool_use_id,
+                    "name": name,
+                    "input": {k: "x" for k in keys},
+                }
+            ]
+        },
+    }
+
+
+def tool_result_event(tool_use_id: str = "toolu_01abc", content: str = "ok") -> dict:
+    """User event carrying a tool_result block (claude's reply with tool output)."""
+    return {
+        "type": "user",
+        "message": {
+            "content": [
+                {"type": "tool_result", "tool_use_id": tool_use_id, "content": content}
+            ]
+        },
+    }
+
+
+def result_event(
+    cost_usd: float = 0.01,
+    *,
+    is_error: bool = False,
+    subtype: str = "success",
+    input_tokens: int = 10,
+    cache_read: int = 0,
+    cache_creation: int = 0,
+    output_tokens: int = 5,
+    ctx_window: int = 200_000,
+    max_output: int = 64_000,
+    model_id: str = "claude-haiku-4-5-20251001",
+    **extra,
+) -> dict:
+    """Minimal result event; defaults to success."""
+    base = {
+        "type": "result",
+        "subtype": subtype,
+        "is_error": is_error,
+        "total_cost_usd": cost_usd,
+        "usage": {
+            "input_tokens": input_tokens,
+            "cache_read_input_tokens": cache_read,
+            "cache_creation_input_tokens": cache_creation,
+            "output_tokens": output_tokens,
+        },
+        "modelUsage": {
+            model_id: {"contextWindow": ctx_window, "maxOutputTokens": max_output}
+        },
+    }
+    base.update(extra)
+    return base
+
+
+def budget_error_event(cost_usd: float = 0.05) -> dict:
+    """Result event signalling budget overrun."""
+    return {
+        "type": "result",
+        "subtype": "error_max_budget_usd",
+        "is_error": True,
+        "total_cost_usd": cost_usd,
+        "usage": {},
+        "modelUsage": {},
+    }
+
+
+# ---------------------------------------------------------------------------
+# Small test helpers (formerly duplicated across multiple test files)
+# ---------------------------------------------------------------------------
+
+def script_args(**kw) -> argparse.Namespace:
+    """Build an argparse.Namespace for cmd_* functions that take `args`."""
+    return argparse.Namespace(**kw)
+
+
+def patch_runner(coro_module, monkeypatch, runner):
+    """Replace the module-level default ProcessRunner with `runner`."""
+    monkeypatch.setattr(coro_module, "_default_runner", runner)
