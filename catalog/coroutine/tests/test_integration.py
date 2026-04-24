@@ -131,6 +131,13 @@ def test_full_lifecycle(coro_module, tmp_project, scripted_runner, monkeypatch, 
     assert len(slug_lines) == 1
     slug = slug_lines[0]
 
+    # Runner was invoked with --session-id <the-uuid-we-persisted>, NOT --resume
+    create_argv = runner.calls[0]["argv"]
+    assert "--session-id" in create_argv
+    assert "--resume" not in create_argv
+    persisted_uuid = coro_module.load_session(tmp_project, slug)
+    assert create_argv[create_argv.index("--session-id") + 1] == persisted_uuid
+
     # CURRENT stack has the slug on top
     assert coro_module.current_top(tmp_project) == slug
 
@@ -150,6 +157,15 @@ def test_full_lifecycle(coro_module, tmp_project, scripted_runner, monkeypatch, 
     assert "Hello world." in captured.out                # assistant text streamed to stdout
     assert "YIELD: DONE | greeted" in captured.err       # yield surfaced to stderr
     assert coro_module.turn_log_file(tmp_project, slug, 1).exists()
+
+    # Send invoked with --resume <same-uuid>, NOT --session-id. A regression to
+    # create-semantics (--session-id) would spawn a fresh claude session every
+    # send and silently lose conversation history.
+    send_argv = runner.calls[1]["argv"]
+    assert "--resume" in send_argv
+    assert "--session-id" not in send_argv
+    assert send_argv[send_argv.index("--resume") + 1] == persisted_uuid
+    assert send_argv[send_argv.index("--resume") + 1] == coro_module.load_session(tmp_project, slug)
 
     # --- STATUS ---
     coro_module.cmd_status(tmp_project, slug)
