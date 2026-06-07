@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -258,11 +259,36 @@ def do_reinstall(ref: str, dest_root: Path) -> None:
     print(f"reinstalled {name} → {dst}")
 
 
-def do_list() -> None:
-    """Emit a newline-separated list of '<domain>/<name>' refs to stdout.
+def read_version(skill_md: Path) -> str | None:
+    """Extract the skill version from a SKILL.md YAML frontmatter block.
 
-    Pipe-friendly: no decoration, no header, no trailing annotations.
-    Decorative output and install-state markers belong in a separate verb.
+    Matches a `version:` key anywhere in the frontmatter (top-level or nested
+    under `metadata:`), since the catalog convention is `metadata.version`.
+    Stdlib only — no YAML parser. Returns None if absent or unreadable.
+    """
+    try:
+        text = skill_md.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if not text.startswith("---"):
+        return None
+    lines = text.splitlines()
+    end = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"), None)
+    if end is None:
+        return None
+    for line in lines[1:end]:
+        m = re.match(r"\s*version:\s*(.+?)\s*$", line)
+        if m:
+            return m.group(1).strip().strip("\"'")
+    return None
+
+
+def do_list() -> None:
+    """Emit a tab-separated '<domain>/<name>\\t<version>' line per skill.
+
+    Pipe-friendly: no header, no decoration. Version is the skill's declared
+    `metadata.version`, or '-' when undeclared. Install-state markers belong
+    in a separate verb.
     """
     if not CATALOG.is_dir():
         return
@@ -271,8 +297,10 @@ def do_list() -> None:
         if not skills.is_dir():
             continue
         for skill in sorted(skills.iterdir()):
-            if (skill / "SKILL.md").is_file():
-                print(f"{domain_dir.name}/{skill.name}")
+            skill_md = skill / "SKILL.md"
+            if skill_md.is_file():
+                version = read_version(skill_md) or "-"
+                print(f"{domain_dir.name}/{skill.name}\t{version}")
 
 
 # ---------------------------------------------------------------------------
