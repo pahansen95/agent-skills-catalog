@@ -55,6 +55,35 @@ Key properties:
   and delegates to `just`, so it works from any working directory
 - Symlinks keep everything DRY: one file, multiple entry points
 
+## What a skill is and how to draft one
+
+A skill is a workflow: it takes inputs, produces an output, and may fail instead.
+It works against some state, and owns a small, named set of responsibilities —
+everything outside that set is explicitly not its concern.
+
+Skills are independent. A skill never depends on another skill. If two seem to
+depend on each other, they are really one composite skill (collapse them), or
+they share substrate through a domain's `protocol.md` and `src/`. Composition
+happens at runtime and is driven by the user, who stacks independent skills
+together. A skill enables this by delegating **behaviors** — replaceable parts
+defined by a contract — that another skill can satisfy without either naming the
+other. This is distinct from its **settings**, which are plain values that tune a
+run. Behaviors are the seams; settings are the knobs.
+
+To draft one:
+
+- Name the responsibilities it owns, and — just as explicitly — its non-goals.
+- Define its contract: the inputs, the output, and how it fails; and the state
+  it works against.
+- Separate behaviors (the seams it delegates) from settings (its tunables), and
+  ship a default for each behavior so the skill stands alone.
+- State the invariants it holds throughout.
+- Choose the layout: a simple skill, or a complex domain when shared
+  `protocol.md`/`src/` is justified (see above).
+- Write it as `SKILL.md` with YAML frontmatter (`name`, `description`,
+  `metadata.version`). Follow the repo's git discipline: atomic commits,
+  explicit staging, no AI attribution.
+
 ## The `vendor/` tree
 
 Holds gitsubmodules for reference and specification:
