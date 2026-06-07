@@ -1,135 +1,83 @@
 ---
 name: iterative-docs
-description: Write long documents incrementally with structure-first approach and section-by-section elaboration. Use for implementation plans, specs, guides, or any document over 200 lines.
+description: Build a long document incrementally — decompose into a structure, then fill it one unit at a time while holding the whole coherent. Designed to compose with other skills through replaceable behaviors, not dependencies. Use for specs, plans, guides, or any document long enough that one pass degrades quality.
 metadata:
-  version: "1.1"
+  version: "2.0"
 ---
 
 # Iterative Document Writing
 
-**Don't one-shot long documents.** Write incrementally with structure-first approach.
+A skill is a workflow: it takes inputs, produces an output, and may fail instead. This workflow takes a brief and produces a finished document, working against a structure it builds up as it goes.
 
-## When to Use
+It owns exactly three responsibilities: **decomposition** (turn a goal into an ordered structure), **iteration** (fill one unit at a time), and **coherence** (every unit fits the whole). Everything else — prose register, sourcing, citation, fact-checking, when to pause for a human — is *not its concern*. Those compose in as replaceable behaviors (below); this workflow never names the skills that provide them.
 
-- Documents longer than 200 lines
-- Implementation plans or technical specs
-- Guides or tutorials with multiple sections
-- Any document requiring sustained coherence
+## Inputs and output
 
-## The Process
+- **In:** a *brief* (what to build — the goal, the audience, any source material) and a set of *settings* (the tunables below).
+- **Out:** a finished document — or a failure, if no coherent structure can be formed, or a unit cannot be filled coherently even after revising the outline.
 
-```
-STRUCTURE → TRACK → ELABORATE → REVIEW → REPEAT
-```
+## The structure it builds
 
-### Phase 1: Structure First
+A document is a title, an **overview**, and an ordered list of **sections**. The overview is the thesis and the shape of the whole — written for real at the start, never a placeholder; it is the contract the body must satisfy. Each section is either **pending** (a placeholder heading) or **filled** (written prose).
 
-Create document with outline and placeholders:
+## Two kinds of parameter
 
-```markdown
-# Document Title
+The distinction is the whole point of the design:
 
-> Brief description of purpose
+- **Settings** are *values*: what to build and how finely. Changing them tunes the run.
+- **Behaviors** are *replaceable parts*: how prose gets drafted, and how a filled section gets judged. The workflow is defined against the **contract** each behavior must meet — not against any particular skill that meets it. So any skill satisfying the contract composes in, and this workflow stays unaware it exists.
 
-## Overview
-[2-3 paragraphs summarizing the entire document]
+## The two replaceable behaviors
 
-## Section 1: [Topic]
-*Details to follow...*
+The workflow delegates two behaviors. It ships a default for each — and those defaults are the *only* behavior it owns:
 
-## Section 2: [Topic]
-*Details to follow...*
-```
+1. **Draft** — *given a section's heading and the document so far, produce its prose.* The default writes plain prose that satisfies the heading. The workflow guarantees only that the prose exists and fits — **not** its register, its sourcing, or its citations.
+2. **Review** — *given a freshly filled section, return the problems to fix (none means accept).* The default checks the three things this skill is responsible for:
+   - **Coherence** — does it follow from the sections before it?
+   - **Completeness** — does it deliver what its heading and the overview promised?
+   - **Consistency** — same terminology, structure, and conventions as the rest?
 
-**Key actions:**
-1. Write a meaningful overview (not a placeholder)
-2. List all sections with clear titles
-3. Use `*Details to follow...*` for pending content
-4. Commit structure before proceeding
+**Composition is wrapping, not coupling.** Another skill plugs in by providing its own version of a behavior — usually by *wrapping* the default so effects stack. A voice skill wraps Draft: it calls the inner drafter, then re-registers the prose. A sourcing skill wraps Review: it runs the inner checks, then adds "any claim not traceable to a source." The workflow runs identically underneath; it only ever sees "a Draft" and "a Review." The rich, emergent workflow from a real session is just this one workflow called with wrapped behaviors.
 
-### Phase 2: Track with TodoWrite
+## The procedure
 
-```typescript
-TodoWrite([
-  { content: "Write Section 1", status: "pending", activeForm: "Writing Section 1" },
-  { content: "Write Section 2", status: "pending", activeForm: "Writing Section 2" },
-])
-```
+Run the phases in order; the fill phase repeats once per unit.
 
-### Phase 3: Section-by-Section
+1. **Decompose.** Write the real overview. List every section as a pending placeholder heading. Stabilize this skeleton before filling — if a user is in the loop, a natural point to confirm direction.
+2. **Track.** Create one task per section (`TaskCreate`); the task list is the cursor for which unit is active and what remains. Advance each task `pending → in_progress → completed` with `TaskUpdate`.
+3. **Fill, one unit at a time.** For the next pending unit:
+   - Mark its task `in_progress`.
+   - **Revise if needed.** The outline is a hypothesis. If drafting this unit reveals the structure is wrong — two sections are one, ordering is backwards, a section is missing — fix the skeleton and realign the tasks instead of forcing prose into a flawed shape.
+   - **Draft** the unit (size it to one coherent idea, not a line count).
+   - **Review** the unit; resolve every finding before advancing. If a unit cannot be made coherent even after outline revision, the run fails rather than shipping an incoherent section.
+   - Mark its task `completed`.
+   - You need not re-read a section to confirm a write landed — the write tools fail loudly if they don't apply. Re-read only to judge coherence across what is now on the page.
+4. **Finalize.** Pass over the whole: the overview still matches the body (revise it if the body diverged), transitions read in order, terminology and formatting are uniform end to end.
 
-For each section:
-1. Mark `in_progress`
-2. Write content (50-150 lines)
-3. Read back immediately
-4. Mark `completed`
-5. Move to next
+**Resumability.** The fill phase advances exactly one unit per turn. A caller may drive it unit by unit and interleave its own concerns — a checkpoint, a human review — between units. That orchestration is the *caller's* composition; this workflow does not own cadence.
 
-### Phase 4: Review Loop
+## Settings
 
-After each section, check:
-- **Coherence** - Flows from previous sections?
-- **Completeness** - All promised details included?
-- **Consistency** - Same terminology throughout?
+| Setting | Default | Adjust when |
+|---|---|---|
+| Granularity | One section per task | Very large docs → group into parts; short docs → finer sections |
+| Unit size | One coherent idea (~50–150 lines) | A gauge only — never pad to hit it, never split a whole idea to stay under it |
+| Outline revisable | Yes (enables in-loop revision) | Turn off only when a fixed structure is externally mandated |
 
-Fix issues before moving on.
+## Invariants
 
-## Section Writing
+Hold these throughout; breaking one is the failure it names.
 
-### Structure
+1. The overview is real before any section is filled — never a stub.
+2. Exactly one unit is in progress at a time — no parallel half-finished units.
+3. A unit is complete only after review returns no problems — coherence is never deferred.
+4. The count of pending units only decreases, except during an outline revision — the one sanctioned reshuffle.
+5. On success, no pending placeholder remains — the structure is fully filled.
 
-```markdown
-## Section Title
+## Non-goals
 
-[1-2 sentence intro]
+This workflow does **not** one-shot a document, manage prose register, verify facts, attach citations, or decide when to pause for a human. Each is a separate skill, composed through the Draft or Review behavior, or by the caller driving the fill phase. Keeping them out is what makes this one independent and testable on its own.
 
-### Subsection A
-[Content with examples]
+## In one line
 
-### Subsection B
-[Content with examples]
-```
-
-### Guidelines
-
-| Guideline | Target |
-|-----------|--------|
-| Lines per section | 50-150 |
-| Subsection trigger | >100 lines |
-| Code examples | Where relevant |
-| Tables | For structured data |
-
-## Anti-Patterns
-
-| Anti-Pattern | Fix |
-|--------------|-----|
-| One-shotting 500+ lines | Write 50-100, review, continue |
-| 20 placeholder sections | 5-7 sections, fill before adding more |
-| Skipping reviews | Review after each section |
-| Ignoring todo tracking | TodoWrite before and after |
-| Perfectionism paralysis | Good-enough, move on, polish later |
-
-## Quality Checklist
-
-### Per Section
-- [ ] Placeholder text replaced
-- [ ] Code examples correct
-- [ ] Terminology matches previous
-
-### Final
-- [ ] All sections filled
-- [ ] Overview matches content
-- [ ] Consistent formatting
-
-## Tools
-
-| Tool | When |
-|------|------|
-| `Write` | Initial structure, new sections |
-| `Edit` | Replace placeholders, fix issues |
-| `Read` | Review after each section |
-| `TodoWrite` | Track section progress |
-
-## Remember
-
-> "Start with high-level overview, then incrementally add details section by section, reviewing as you go."
+> Draft the structure first; fill it one coherent unit at a time; keep the whole consistent — and let other skills supply voice, sourcing, and review by replacing the drafting and review behaviors.
