@@ -12,6 +12,8 @@ pattern matching machine built to guess the next most probable token.
 These are procedural instructions that program an agent's behavior;
 equivalently, a behavioral spec.
 
+Background notes on synthesis live in [docs/synthesis.md](docs/synthesis.md).
+
 ```
 skills/
 ├── coro-develop/
