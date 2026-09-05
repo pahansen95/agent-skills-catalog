@@ -19,6 +19,7 @@ skills/
 ├── coro-develop/
 ├── epistemic/
 ├── iterative-docs/
+├── playwright-service/
 ├── rca-conduct/
 └── salience/
 ```
@@ -28,6 +29,7 @@ skills/
 | [`coro-develop`](skills/coro-develop/SKILL.md) | Orchestrate a stateful, resumable worker session. |
 | [`epistemic`](skills/epistemic/SKILL.md) | Make factual claims traceable to their support. |
 | [`iterative-docs`](skills/iterative-docs/SKILL.md) | Write long documents incrementally with a structure-first approach. |
+| [`playwright-service`](skills/playwright-service/SKILL.md) | Use the shared Playwright browser automation service. |
 | [`rca-conduct`](skills/rca-conduct/SKILL.md) | Conduct a cited, control-validated root-cause analysis. |
 | [`salience`](skills/salience/SKILL.md) | Shape natural-language communication to the reader's capacity. |
 
