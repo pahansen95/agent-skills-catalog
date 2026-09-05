@@ -1,7 +1,6 @@
 """Shared pytest fixtures for the coroutine test suite.
 
-Tests import the coroutine module directly from src/ via a sys.path insert;
-this avoids packaging and keeps the source tree unchanged.
+Tests import the self-contained coroutine module directly from scripts/.
 """
 from __future__ import annotations
 
@@ -13,7 +12,7 @@ from pathlib import Path
 import pytest
 
 
-_SRC = Path(__file__).parent.parent / "src" / "coroutine.py"
+_SRC = Path(__file__).parent.parent / "scripts" / "coroutine.py"
 
 # All CORO_* and CC-related env vars that tests must start clean each run.
 # Centralized here so adding a new env knob in one place cleans it up for all

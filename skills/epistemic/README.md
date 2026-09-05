@@ -9,6 +9,6 @@ support comes from, whether it holds, and how the attribution is recorded.
 
 ## Skills
 
-- **[grounding](skills/grounding/SKILL.md)** — make factual claims traceable:
+- **[epistemic](SKILL.md)** — make factual claims traceable:
   find each claim's support, optionally test it, record the attribution, and
   never let a claim pass silently unsupported.

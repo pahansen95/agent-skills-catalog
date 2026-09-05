@@ -19,48 +19,42 @@ def test_skill_root_finds_sentinel_via_walk_up(coro_module, tmp_path, monkeypatc
     assert coro_module._skill_root() == skill_root
 
 
-def test_skill_root_finds_via_symlink_fallback(coro_module, tmp_path, monkeypatch):
-    """Source-tree shape: coroutine.py is at catalog/<domain>/src/coroutine.py,
-    which is not an ancestor of any SKILL.md. The skill in
-    catalog/<domain>/skills/<name>/ symlinks scripts/coroutine.py back to
-    src/coroutine.py; _skill_root() finds it via the sibling scan."""
-    domain = tmp_path / "domain"
-    src = domain / "src"
-    src.mkdir(parents=True)
-    real_script = src / "coroutine.py"
-    real_script.write_text("# placeholder")
-
-    skill = domain / "skills" / "my-skill"
+def test_skill_root_finds_self_contained_skill_through_view_symlink(
+    coro_module, tmp_path, monkeypatch
+):
+    """A view symlink resolves to the self-contained skill directory."""
+    skill = tmp_path / "registry" / "coro-develop"
     (skill / "scripts").mkdir(parents=True)
     (skill / "SKILL.md").write_text("# sentinel")
-    (skill / "scripts" / "coroutine.py").symlink_to(real_script)
+    real_script = skill / "scripts" / "coroutine.py"
+    real_script.write_text("# placeholder")
 
-    monkeypatch.setattr(coro_module, "__file__", str(real_script))
+    view = tmp_path / "view" / "coro-develop"
+    view.parent.mkdir()
+    view.symlink_to(skill, target_is_directory=True)
+
+    monkeypatch.setattr(coro_module, "__file__", str(view / "scripts" / "coroutine.py"))
     assert coro_module._skill_root() == skill
 
 
-def test_skill_root_prefers_walk_up_over_sibling(coro_module, tmp_path, monkeypatch):
-    """If both a walk-up SKILL.md and a sibling skill exist, walk-up wins —
-    matches the installed-tree invariant (flat, self-contained)."""
+def test_skill_root_prefers_nearest_sentinel(coro_module, tmp_path, monkeypatch):
+    """The nearest SKILL.md sentinel wins during upward discovery."""
     skill_root = tmp_path / "installed-skill"
     (skill_root / "scripts").mkdir(parents=True)
     (skill_root / "SKILL.md").write_text("# walk-up sentinel")
     fake_script = skill_root / "scripts" / "coroutine.py"
     fake_script.write_text("# placeholder")
 
-    # Also create a sibling skills/ dir that would be a valid fallback.
-    sibling = skill_root / "skills" / "other"
-    (sibling / "scripts").mkdir(parents=True)
-    (sibling / "SKILL.md").write_text("# sibling sentinel")
-    (sibling / "scripts" / "coroutine.py").symlink_to(fake_script)
+    outer_root = skill_root.parent
+    (outer_root / "SKILL.md").write_text("# outer sentinel")
 
     monkeypatch.setattr(coro_module, "__file__", str(fake_script))
-    # Walk-up finds skill_root first.
+    # Upward discovery finds skill_root before its parent.
     assert coro_module._skill_root() == skill_root
 
 
 def test_skill_root_raises_when_no_sentinel(coro_module, tmp_path, monkeypatch):
-    """No SKILL.md anywhere in the ancestry or sibling skills/ → CoroError."""
+    """No SKILL.md anywhere in the ancestry raises CoroError."""
     orphan = tmp_path / "orphan" / "coroutine.py"
     orphan.parent.mkdir(parents=True)
     orphan.write_text("# placeholder")
@@ -70,24 +64,11 @@ def test_skill_root_raises_when_no_sentinel(coro_module, tmp_path, monkeypatch):
         coro_module._skill_root()
 
 
-def test_skill_root_ignores_siblings_without_matching_symlink(coro_module, tmp_path, monkeypatch):
-    """A sibling skill that symlinks some *other* coroutine.py must not match."""
-    domain = tmp_path / "domain"
-    src = domain / "src"
-    src.mkdir(parents=True)
-    real_script = src / "coroutine.py"
+def test_skill_root_rejects_script_outside_skill(coro_module, tmp_path, monkeypatch):
+    """A script without an ancestor SKILL.md is rejected."""
+    real_script = tmp_path / "orphan" / "coroutine.py"
+    real_script.parent.mkdir()
     real_script.write_text("# placeholder")
-
-    decoy_src = tmp_path / "decoy"
-    decoy_src.mkdir()
-    decoy_script = decoy_src / "coroutine.py"
-    decoy_script.write_text("# decoy")
-
-    skill = domain / "skills" / "my-skill"
-    (skill / "scripts").mkdir(parents=True)
-    (skill / "SKILL.md").write_text("# sentinel")
-    # Symlinks to the decoy, not to our real_script.
-    (skill / "scripts" / "coroutine.py").symlink_to(decoy_script)
 
     monkeypatch.setattr(coro_module, "__file__", str(real_script))
     with pytest.raises(coro_module.CoroError, match="SKILL.md sentinel not found"):
@@ -95,8 +76,7 @@ def test_skill_root_ignores_siblings_without_matching_symlink(coro_module, tmp_p
 
 
 def test_skill_root_in_real_source_tree(coro_module):
-    """Smoke: against the actual checked-in source tree, _skill_root() resolves
-    to catalog/coroutine/skills/coro-develop/."""
+    """Smoke: against the checked-in self-contained skill directory."""
     root = coro_module._skill_root()
     assert (root / "SKILL.md").is_file()
     assert root.name == "coro-develop"

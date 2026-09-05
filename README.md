@@ -1,92 +1,68 @@
 # Agent Skills Catalog
 
-A catalog of behavioral specs, each in its own subproject under `catalog/`.
-The `skills/*` directory allows multiple variants of a spec to coexist.
+A flat registry of behavioral specifications. Each skill is self-contained in
+`skills/<name>/`, with `SKILL.md` as its entry point and any code, references,
+or templates it needs beside it.
 
 I don't like the name `skill` — it anthropomorphizes a cluster of computers
 running linear algebra algorithms. This project is my collection of workflows
 automated via an agent: a software harness around an LLM — a high-dimensional
 pattern matching machine built to guess the next most probable token.
 
-These are procedural instructions that program an agent's behavior; equivalently,
-a behavioral spec.
-
-## Simple skill
-
-A single behavioral spec with no supporting code:
+These are procedural instructions that program an agent's behavior;
+equivalently, a behavioral spec.
 
 ```
-catalog/
-└── <name>/
-    ├── README.md
-    └── skills/
-        └── <name>/
-            └── SKILL.md        -- symlink → ../../README.md
+skills/
+├── coro-develop/
+├── epistemic/
+├── iterative-docs/
+├── rca-conduct/
+└── salience/
 ```
 
-## Complex domain skill
+| Skill | Purpose |
+|---|---|
+| [`coro-develop`](skills/coro-develop/SKILL.md) | Orchestrate a stateful, resumable worker session. |
+| [`epistemic`](skills/epistemic/SKILL.md) | Make factual claims traceable to their support. |
+| [`iterative-docs`](skills/iterative-docs/SKILL.md) | Write long documents incrementally with a structure-first approach. |
+| [`rca-conduct`](skills/rca-conduct/SKILL.md) | Conduct a cited, control-validated root-cause analysis. |
+| [`salience`](skills/salience/SKILL.md) | Shape natural-language communication to the reader's capacity. |
 
-A domain covering multiple facets, each with its own behavioral spec, shared
-source code, and supporting assets:
+This repository is a registry, not an installer. Make a skill directory
+available through the skill mechanism used by your agent host; no automatic
+discovery of `.agent/skill` directories is provided here.
 
-```
-catalog/
-└── <domain>/
-    ├── README.md               -- domain overview & first principles
-    ├── protocol.md             -- shared spec loaded by skills at runtime
-    ├── src/
-    │   └── tool.py             -- shared implementation
-    └── skills/
-        ├── <facet-a>/
-        │   ├── SKILL.md        -- behavioral spec for facet A
-        │   ├── protocol.md     -- symlink → ../../protocol.md
-        │   └── scripts/
-        │       ├── tool.py     -- symlink → ../../../src/tool.py
-        │       ├── Justfile    -- task runner wrapping tool.py
-        │       └── alias       -- shell alias → just --justfile Justfile
-        └── <facet-b>/
-            └── SKILL.md        -- behavioral spec for facet B
-```
-
-Key properties:
-- `src/` holds the source of truth for shared code — skills reference it via symlink
-- `protocol.md` is a shared spec document loaded at runtime, not inlined
-- `scripts/alias` is a shell script that resolves its own location via `BASH_SOURCE`
-  and delegates to `just`, so it works from any working directory
-- Symlinks keep everything DRY: one file, multiple entry points
+`coro-develop` requires the `claude` CLI at runtime. Its local environment can
+be created with `skills/coro-develop/scripts/setup` (Python 3.13 and `uv`
+required). `rca-conduct` requires `iterative-docs` and `coro-develop` to be
+available in the same session. Coroutine workers activate `/salience on` for
+their worker-role preamble.
 
 ## What a skill is and how to draft one
 
-A skill is a workflow: it takes inputs, produces an output, and may fail instead.
-It works against some state, and owns a small, named set of responsibilities —
-everything outside that set is explicitly not its concern.
+A skill is a workflow: it takes inputs, produces an output, and may fail
+instead. It works against some state, and owns a small, named set of
+responsibilities — everything outside that set is explicitly not its concern.
 
-Skills are independent. A skill never depends on another skill. If two seem to
-depend on each other, they are really one composite skill (collapse them), or
-they share substrate through a domain's `protocol.md` and `src/`. Composition
-happens at runtime and is driven by the user, who stacks independent skills
-together. A skill enables this by delegating **behaviors** — replaceable parts
-defined by a contract — that another skill can satisfy without either naming the
-other. This is distinct from its **settings**, which are plain values that tune a
-run. Behaviors are the seams; settings are the knobs.
+Skills compose through behaviors: replaceable parts defined by a contract. A
+skill can delegate a behavior without prescribing which available skill or
+host mechanism supplies it. Settings are plain values that tune a run.
+`rca-conduct` is explicit about its two required skills because its operational
+contract uses their behaviors; those dependencies are listed above.
 
 To draft one:
 
 - Name the responsibilities it owns, and — just as explicitly — its non-goals.
-- Define its contract: the inputs, the output, and how it fails; and the state
-  it works against.
-- Separate behaviors (the seams it delegates) from settings (its tunables), and
-  ship a default for each behavior so the skill stands alone.
+- Define its contract: the inputs, the output, how it fails, and the state it works against.
+- Separate delegated behaviors from settings, and ship a default for each behavior so the skill stands alone.
 - State the invariants it holds throughout.
-- Choose the layout: a simple skill, or a complex domain when shared
-  `protocol.md`/`src/` is justified (see above).
-- Write it as `SKILL.md` with YAML frontmatter (`name`, `description`,
-  `metadata.version`). Follow the repo's git discipline: atomic commits,
-  explicit staging, no AI attribution.
+- Put its complete entry point at `skills/<name>/SKILL.md`; keep supporting files in that directory.
+- Use YAML frontmatter (`name`, `description`, `metadata.version`) and follow the repository's git discipline.
 
 ## The `vendor/` tree
 
-Holds gitsubmodules for reference and specification:
+Holds git submodules for reference and specification:
 
 | Submodule | Purpose |
 |---|---|

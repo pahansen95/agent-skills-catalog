@@ -18,7 +18,25 @@ driving long-running implementation work across multiple agent turns where:
 See [protocol.md](protocol.md) for the complete YIELD signal vocabulary,
 message types, and turn structure.
 
-## Skills
+## Skill
 
-- **[coro-develop](skills/coro-develop/SKILL.md)** — activates the orchestrator
-  behavioral spec for driving a coroutine worker session
+[`SKILL.md`](SKILL.md) activates the orchestrator behavioral spec for driving
+a coroutine worker session. The authoritative protocol and role documents are
+kept with it so the skill is self-contained.
+
+## Setup and testing
+
+From this repository's root, create the coroutine runtime environment with:
+
+```sh
+skills/coro-develop/scripts/setup
+```
+
+This requires Python 3.13 and `uv`. The generated
+`skills/coro-develop/scripts/.venv/` is ignored. For local test development,
+install the test dependencies into that environment and run the suite:
+
+```sh
+uv pip install --python skills/coro-develop/scripts/.venv/bin/python pytest hypothesis
+skills/coro-develop/scripts/.venv/bin/python -m pytest skills/coro-develop/tests
+```

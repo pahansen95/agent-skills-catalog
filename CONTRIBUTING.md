@@ -28,13 +28,14 @@ Repository-tracked hooks enforce the no-attribution rule above. They live
 on the **`meta/hooks`** orphan branch (no shared history with `trunk`) and
 are mounted into the `hooks/` directory on `trunk` via a git worktree.
 
-Set up per-clone:
+Set up per clone:
 
 ```sh
-just _setup-hooks
+git worktree add hooks meta/hooks
+git config core.hooksPath hooks
 ```
 
-That target is idempotent. It does two things:
+These commands do two things:
 
 1. `git worktree add hooks meta/hooks` — mounts the orphan branch at `hooks/`.
 2. `git config core.hooksPath hooks` — points git at the mounted hooks.

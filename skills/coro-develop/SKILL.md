@@ -5,7 +5,7 @@ description: >
   driving a stateful worker through a phase of implementation work —
   creating the session, sending messages, interpreting YIELD, enforcing
   quality gates. Activate with /coro-develop.
-compatibility: Requires the claude CLI on PATH. Python 3.13 and uv are required at install time only.
+compatibility: Requires the claude CLI on PATH. Python 3.13 and uv are required to run scripts/setup.
 ---
 
 Bootstraps this session into the **orchestrator role** of a coroutine. After
@@ -18,8 +18,7 @@ the protocol and role docs, which you'll read as part of bootstrap.
 ## Skill layout
 
 All paths in this document are relative to the skill root — the directory
-containing this `SKILL.md`. The installer resolves the absolute path at
-install time; you'll be told the skill base directory when activated.
+containing this `SKILL.md`. Resolve that directory before invoking the CLI.
 
 ```
 <skill_root>/

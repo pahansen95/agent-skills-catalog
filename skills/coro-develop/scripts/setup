@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
-# Install-time hook for the coro-develop skill.
-#
-# Invoked by the root Justfile's `install` target after rsync -rL has
-# copied the skill tree into ~/.claude/skills/<name>/. Runs with cwd set
-# to the scripts/ dir, so .venv/ lands next to coroutine.py.
+# Create the local runtime environment for the coro-develop skill. The venv
+# lives beside coroutine.py so the in-tree launcher can find it.
 set -euo pipefail
 
 declare CONTEXT; CONTEXT="$( cd -- "${BASH_SOURCE[0]%/*}" && pwd )"; declare -r CONTEXT
@@ -18,4 +15,4 @@ if command -v pyenv &>/dev/null; then
 fi
 
 uv venv --python 3.13 --quiet
-echo "installed coro-develop venv at ${CONTEXT}/.venv"
+echo "created coro-develop venv at ${CONTEXT}/.venv"

@@ -14,7 +14,7 @@ Three layers:
 |---|---|---|
 | **Specification** | The protocol — what the system is | This document |
 | **Operating discipline** | How each actor behaves within the spec | [role/orchestrator.md](role/orchestrator.md), [role/worker.md](role/worker.md) |
-| **Bootstrap** | How to enter a role in a given session | `skills/coro-develop/SKILL.md` |
+| **Bootstrap** | How to enter a role in a given session | [`SKILL.md`](SKILL.md) |
 
 Each layer depends only on layers above it. Protocol stands alone. Role docs
 depend on protocol. SKILL depends on both.

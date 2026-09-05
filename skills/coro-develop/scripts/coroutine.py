@@ -359,36 +359,20 @@ def _emit_warnings(resolved: ResolvedModel) -> None:
 def _skill_root() -> Path:
     """Resolve the skill root — the directory containing SKILL.md.
 
-    In the installed tree, __file__ is <skill_root>/scripts/coroutine.py, so
-    walk-up finds SKILL.md one level above. In the source tree, __file__ is
-    catalog/coroutine/src/coroutine.py, which is not an ancestor of any
-    SKILL.md; fall back to finding the sole skill that symlinks this file
-    back to itself (catalog/coroutine/skills/*/scripts/coroutine.py → src/).
+    coroutine.py is self-contained at <skill_root>/scripts/coroutine.py, so
+    walking upward finds SKILL.md one level above. Resolving __file__ also
+    supports a skill directory made available through a view symlink.
     """
     here = Path(__file__).resolve()
 
-    # Installed tree: SKILL.md sits at or above our directory.
+    # SKILL.md sits at or above our directory.
     p = here.parent
     while p != p.parent:
         if (p / "SKILL.md").is_file():
             return p
         p = p.parent
 
-    # Source tree: scan sibling skills/ for a package that resolves back to us.
-    domain_root = here.parent.parent                                 # .../catalog/<domain>/
-    skills_dir = domain_root / "skills"
-    if skills_dir.is_dir():
-        for candidate in skills_dir.iterdir():
-            if not (candidate / "SKILL.md").is_file():
-                continue
-            script = candidate / "scripts" / "coroutine.py"
-            try:
-                if script.resolve() == here:
-                    return candidate
-            except OSError:
-                continue
-
-    die("SKILL.md sentinel not found — coroutine.py is running outside a skill install")
+    die("SKILL.md sentinel not found — coroutine.py is running outside a skill directory")
 
 
 def _load_preamble() -> str:

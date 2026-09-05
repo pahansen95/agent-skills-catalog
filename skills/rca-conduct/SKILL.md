@@ -55,20 +55,20 @@ simulate, or degrade.
    > RCA requires `iterative-docs` and `coro-develop`. Missing:
    > `<list>`.
    >
-   > Install with:
+   > Make these skill directories available to the session:
    > ```
-   > cd <catalog-root> && just install documentation/iterative-docs
-   > cd <catalog-root> && just install coroutine/coro-develop
+   > <catalog-root>/skills/iterative-docs
+   > <catalog-root>/skills/coro-develop
    > ```
    >
-   > Re-invoke `/rca on` after install.
+   > Re-invoke `/rca on` after they are available.
 
 4. No degraded operation. No approximation. No substitute.
 
 ## How to use the spec
 
-The full behavioral specification lives at `spec/` within this skill's
-install directory. It is lossless and authoritative; this file is
+The full behavioral specification lives at `spec/` within this skill
+directory. It is lossless and authoritative; this file is
 operational and lossy.
 
 Read order:
