@@ -8,11 +8,6 @@ cd "${CONTEXT}"
 
 command -v uv &>/dev/null || { echo 'error: uv is not in PATH' >&2; exit 1; }
 
-# pyenv is optional — pin only when available. uv handles python discovery
-# independently.
-if command -v pyenv &>/dev/null; then
-  pyenv local 3.13 2>/dev/null || true
-fi
-
-uv venv --python 3.13 --quiet
+PYTHON_VERSION="$(<"${CONTEXT}/.python-version")"
+uv venv --python "${PYTHON_VERSION}" --quiet
 echo "created coro-develop venv at ${CONTEXT}/.venv"

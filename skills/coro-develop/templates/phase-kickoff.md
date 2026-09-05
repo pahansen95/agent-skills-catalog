@@ -1,13 +1,13 @@
 # Phase {slug} Kickoff
 
-Standard YIELD protocol. Standard scope discipline. Latent-bug rule.
+Follow the worker YIELD contract and the phase's scope-deviation policy.
 
 ## Context
 
-Phase {slug} of the coroutine skill iteration.
+Implementation phase {slug} for the assigned project.
 
-Prior phases:
-- (list completed phases by tag and commit)
+Dependencies:
+- (relevant specifications, commits, or earlier phases)
 
 Full spec: `.cache/TODO/phase-{slug}.md`.
 
@@ -17,12 +17,9 @@ Orient only. Do not write code. Do not propose architecture.
 
 Read:
 - `.cache/TODO/phase-{slug}.md`.
-- (relevant source files)
+- (relevant project and reference files)
 
-Report (cite file:line for each):
-
-1.
-2.
-3.
+Report your understanding of the goal, constraints, relevant code, open
+questions, and evidence for non-obvious claims. Cite `file:line` where useful.
 
 End with `YIELD: DONE | orientation complete`.

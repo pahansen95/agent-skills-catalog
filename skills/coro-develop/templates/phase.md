@@ -2,22 +2,22 @@
 
 ## Context
 
-(why this phase exists; reference prior phases by tag)
+(Why this phase exists and any relevant completed work.)
 
-Prior phases:
-- (list completed phases by tag and commit)
+Dependencies:
+- (specifications, commits, or earlier phases this work relies on)
 
 ## Goal
 
-- (bullet list of observable outcomes)
+- (observable outcome)
 
 ## Out of scope
 
-- (bullet list of things NOT in this phase)
+- (excluded work)
 
 ## Design constraints
 
-- (bullet list of invariants the implementation must not break)
+- (required invariant or compatibility constraint)
 
 ## Files you may touch
 
@@ -30,34 +30,27 @@ Prior phases:
 **Do NOT touch:**
 -
 
-## What to implement
+## Work
 
 ### {slug}.1 —
 
 ### {slug}.2 —
 
-## Tests
+## Verification
 
-(manual verification steps — no test harness)
+- (automated test or manual check and its expected result)
 
-1.
-2.
+## Evidence required before BEGIN
 
-## What to confirm before BEGIN
-
-Cite (file:line for each):
-
-1.
-2.
-3.
+- (non-obvious claim that needs a source citation)
 
 ## Success gate
 
-- All existing commands work unchanged (no breaking changes).
-- One commit, tagged `catalog-skill-phase-{slug}`.
-- Commit message: `coroutine(skill): `
+- (acceptance criterion)
+- Required checks pass.
+- Changes follow the project's commit conventions.
 
 ## Scope deviation policy
 
-Same as prior phases. Fix latent bugs inline. Stop and flag if a
-required file isn't in the "may touch" list.
+Do not expand the phase to adjacent cleanup or latent defects. Report a needed
+change outside the authorized scope and wait for an explicit decision.
