@@ -35,11 +35,11 @@ This repository is a registry, not an installer. Make a skill directory
 available through the skill mechanism used by your agent host; no automatic
 discovery of `.agent/skill` directories is provided here.
 
-`coro-develop` requires the `claude` CLI at runtime. Its local environment can
-be created with `skills/coro-develop/scripts/setup` (Python 3.13 and `uv`
-required). `rca-conduct` requires `iterative-docs` and `coro-develop` to be
-available in the same session. Coroutine workers activate `/salience on` for
-their worker-role preamble.
+`coro-develop` requires Deno 2.9.6 or newer and the `claude` CLI at runtime;
+its launcher uses the skill-local Deno configuration and preserves the caller's
+working directory. `rca-conduct` requires `iterative-docs` and `coro-develop`
+to be available in the same session. Coroutine workers activate `/salience on`
+for their worker-role preamble.
 
 ## What a skill is and how to draft one
 

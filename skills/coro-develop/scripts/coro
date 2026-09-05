@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 # Entry point for the coro-develop skill. Resolves its own location via
-# BASH_SOURCE, then execs the skill's venv python against coroutine.py.
+# BASH_SOURCE, then runs the skill-local Deno configuration against coroutine.ts.
 # Works from any cwd.
 set -euo pipefail
 
-declare CONTEXT; CONTEXT="$( cd -- "${BASH_SOURCE[0]%/*}" && pwd )"; declare -r CONTEXT
+declare CONTEXT; CONTEXT="$( cd -P -- "${BASH_SOURCE[0]%/*}" && pwd -P )"; declare -r CONTEXT
 [[ -d "${CONTEXT}" && "${CONTEXT##*/}" == "scripts" ]] || {
   printf '%s: %s\n' 'Bad Context' "${CONTEXT}" >&2
   exit 1
 }
 
-VENV_PY="${CONTEXT}/.venv/bin/python"
-[[ -x "${VENV_PY}" ]] || {
-  printf 'error: venv python not found at %s\n' "${VENV_PY}" >&2
-  printf '  run the skill setup script: %s/setup\n' "${CONTEXT}" >&2
+DENO="${DENO:-deno}"
+command -v "${DENO}" >/dev/null 2>&1 || {
+  printf 'error: deno not found on PATH\n' >&2
+  printf '  install Deno 2.9.6 or newer\n' >&2
   exit 1
 }
 
-exec "${VENV_PY}" "${CONTEXT}/coroutine.py" "$@"
+exec "${DENO}" run --config "${CONTEXT}/../deno.json" --allow-read --allow-write --allow-env --allow-run=claude "${CONTEXT}/coroutine.ts" "$@"
