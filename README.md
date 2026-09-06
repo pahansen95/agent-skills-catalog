@@ -12,13 +12,12 @@ pattern matching machine built to guess the next most probable token.
 These are procedural instructions that program an agent's behavior;
 equivalently, a behavioral spec.
 
-Background notes on synthesis live in [docs/synthesis.md](docs/synthesis.md).
-
 ```
 skills/
 ├── coro-develop/
 ├── epistemic/
 ├── iterative-docs/
+├── iso-24495/
 ├── playwright-service/
 ├── rca-conduct/
 └── salience/
@@ -29,6 +28,7 @@ skills/
 | [`coro-develop`](skills/coro-develop/SKILL.md) | Orchestrate a stateful, resumable worker session. |
 | [`epistemic`](skills/epistemic/SKILL.md) | Make factual claims traceable to their support. |
 | [`iterative-docs`](skills/iterative-docs/SKILL.md) | Write long documents incrementally with a structure-first approach. |
+| [`iso-24495`](skills/iso-24495/SKILL.md) | Write reader-centred plain-language communication, with routed guidance for legal, science, document-design, and organisational-practice work. |
 | [`playwright-service`](skills/playwright-service/SKILL.md) | Use the shared Playwright browser automation service. |
 | [`rca-conduct`](skills/rca-conduct/SKILL.md) | Conduct a cited, control-validated root-cause analysis. |
 | [`salience`](skills/salience/SKILL.md) | Shape natural-language communication to the reader's capacity. |
