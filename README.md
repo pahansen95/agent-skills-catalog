@@ -66,10 +66,13 @@ To draft one:
 
 ## The `vendor/` tree
 
-Holds git submodules for reference and specification:
+Holds the pinned skills specification used to evaluate catalog compatibility:
 
 | Submodule | Purpose |
 |---|---|
 | [agentskills/agentskills](https://github.com/agentskills/agentskills) | Skills specification |
-| [anthropics/skills](https://github.com/anthropics/skills) | Anthropic's published skills |
-| [openai/skills](https://github.com/openai/skills) | OpenAI's published skills |
+
+Related upstream collections are available from
+[Anthropic](https://github.com/anthropics/skills) and
+[OpenAI](https://github.com/openai/skills). They are references, not vendored
+dependencies of this catalog.
