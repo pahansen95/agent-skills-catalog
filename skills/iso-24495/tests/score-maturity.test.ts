@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { scoreMaturity } from "../scripts/score-maturity.ts";
 
 const answers = await Bun.file(
-  join(import.meta.dir, "fixtures", "answers.sample.json"),
+  join(import.meta.dir, "..", "assets", "answers.sample.json"),
 ).json();
 
 describe("scoreMaturity", () => {

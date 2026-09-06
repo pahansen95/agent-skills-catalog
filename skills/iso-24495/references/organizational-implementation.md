@@ -17,7 +17,7 @@ cd /path/to/project-being-assessed
 
 1. Run `time bun "$skill_root/scripts/audit-evidence.ts" . --json evidence.json` to locate candidate policy, workflow, check, training, and glossary artefacts. Read the relevant material and use [the evidence map](#evidence-map) before drawing conclusions.
 2. For an English-language corpus, optionally run `time bun "$skill_root/scripts/audit-corpus.ts" docs --json findings.json`. Replace `docs` with the agreed corpus path. Its sentence, paragraph, term, and heading checks are local review flags for the Measurement dimension only. They do not measure clarity, prove compliance, or raise a maturity score by themselves.
-3. Ask only the questions needed to fill important evidence gaps, then record evidence-backed answers in [`answers.sample.json`](../tests/fixtures/answers.sample.json) form as `answers.json` and run `time bun "$skill_root/scripts/score-maturity.ts" answers.json --json maturity.json`.
+3. Ask only the questions needed to fill important evidence gaps, then copy [`answers.sample.json`](../assets/answers.sample.json) to `answers.json`, record evidence-backed answers, and run `time bun "$skill_root/scripts/score-maturity.ts" answers.json --json maturity.json`.
 4. Run `time bun "$skill_root/scripts/generate-report.ts" findings.json evidence.json maturity.json --state .plain-language-audit-state.json --out gap-report.md`. Keep the append-only state where the organisation can maintain it.
 
 The generated report is a scaffold. Before delivering it, add the assessed scope,

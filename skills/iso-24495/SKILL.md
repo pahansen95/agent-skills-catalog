@@ -1,8 +1,9 @@
 ---
 name: iso-24495
-description: Write or improve reader-centred plain-language communication. Use for public-facing text and documents; add the relevant reference for legal, science, document-design, or organisational-practice work.
+description: Write or improve reader-centred plain-language communication. Use when readers must find, understand, or act on text, including legal, science, technical, document-design, and organisational-practice work.
+compatibility: Core writing guidance is portable. Organisational audit scripts require Bun.
 metadata:
-  version: "1.0.0"
+  version: "1.0.1"
 ---
 
 # ISO 24495 plain language

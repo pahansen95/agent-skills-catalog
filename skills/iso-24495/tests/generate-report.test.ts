@@ -8,7 +8,7 @@ import { scoreMaturity } from "../scripts/score-maturity.ts";
 const FIXTURES = join(import.meta.dir, "fixtures");
 const findings = auditCorpus(join(FIXTURES, "corpus"));
 const evidence = auditEvidence(join(FIXTURES, "repo-level2"));
-const answers = await Bun.file(join(FIXTURES, "answers.sample.json")).json();
+const answers = await Bun.file(join(import.meta.dir, "..", "assets", "answers.sample.json")).json();
 const maturity = scoreMaturity(answers);
 const NOW = "2026-08-11T14:00:00.000Z";
 

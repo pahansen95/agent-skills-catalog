@@ -2,10 +2,11 @@
 name: salience
 description: >
   Shape human-facing natural language into the densest complete response the
-  reader can readily absorb. Applies by explicit `/salience on` only; disable
-  with `/salience off`. Do not apply it to exact-content spans or artifacts.
+  reader can readily absorb. Invoke explicitly as `$salience`, or with
+  `/salience on` where that host alias exists. Do not apply it to exact-content
+  spans or artifacts.
 metadata:
-  version: "2.0.0"
+  version: "2.0.1"
 ---
 
 # Salience
@@ -15,9 +16,10 @@ densest complete form that remains easy to absorb.
 
 ## Activation
 
-- `/salience on` enables the transform for subsequent human-facing messages.
+- `$salience` enables the transform in Codex. `/salience on` enables it in a
+  host that exposes that command alias.
 - `/salience off` disables it and passes those messages through without this
-  transform.
+  transform where persistent command state is supported.
 - Never self-activate or infer activation from a terse request. Preserve the
   current state until the user changes it.
 

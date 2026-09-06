@@ -3,12 +3,14 @@ name: rca-conduct
 description: >
   Conduct a source-level root-cause analysis of a reproducible software defect
   whose mechanism is unknown. Uses pre-reading predictions, cited primary-source
-  findings, preserved refutations, and controlled validation. Activate only with
-  `/rca on`; deactivate with `/rca off`. Requires `iterative-docs` and
-  `coro-develop`.
+  findings, preserved refutations, and controlled validation. Invoke explicitly
+  as `$rca-conduct`, or with `/rca on` where that host alias exists. Requires
+  `iterative-docs` and `coro-develop`.
 compatibility: >
   Hard-requires `iterative-docs` and `coro-develop` to be available in the same
   session. Fails loudly at activation if either is missing.
+metadata:
+  version: "1.0.0"
 ---
 
 # Conduct Root-Cause Analysis
@@ -18,10 +20,12 @@ deliverable is an auditable causal chain, not a production fix.
 
 ## Activation and dependencies
 
-- `/rca on` activates this workflow. `/rca off` deactivates it. A bare `/rca`
-  is invalid.
+- `$rca-conduct` activates this workflow in Codex. In a host that exposes the
+  command alias, `/rca on` activates it and `/rca off` deactivates it; a bare
+  `/rca` is invalid.
 - Never self-activate. If an unknown defect would benefit from this workflow,
-  offer `/rca on` and wait for the user to invoke it.
+  offer `$rca-conduct`, or `/rca on` where supported, and wait for the user to
+  invoke it.
 - On activation, confirm that `iterative-docs` and `coro-develop` are both
   available in the session. If either is missing, name the missing dependency,
   halt activation, and ask the user to make it available. Do not approximate,

@@ -5,6 +5,8 @@ description: >
   Use when work needs multiple worker turns with explicit review, quality
   gates, or escalation between turns. Activate with /coro-develop.
 compatibility: Requires Deno 2.9.6 or newer and the claude CLI on PATH.
+metadata:
+  version: "1.0.0"
 ---
 
 # Coroutine Development

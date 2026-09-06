@@ -1,8 +1,9 @@
 ---
 name: playwright-service
 description: Use the machine's shared Playwright server for browser automation and web testing. Connect to the running service instead of launching browsers in-process or installing anything. Covers endpoints, the required client pin, engine support, hygiene, and triage.
+compatibility: Requires access to the io.peterhansen.playwright-dev-server service on this machine. The bundled smoke test requires Deno.
 metadata:
-  version: "1.0.0"
+  version: "1.0.1"
   service-label: "io.peterhansen.playwright-dev-server"
   playwright-pin: "1.62.1"
 ---
@@ -77,9 +78,10 @@ Deep probe (from the project checkout, e.g. `space/playwright-dev-server` in the
 view): `deno task health` — probes chromium+firefox over both transports; 60s deadline per
 probe.
 
-Smoke script in this skill: `deno run --allow-all scripts/smoke.ts` (connects, evaluates,
-closes; exits non-zero on failure). The skill directory carries its own `deno.json` so the
-snippet's npm resolution works regardless of ambient package.json/deno.json config.
+Smoke script in this skill: `deno run --allow-all <skill-root>/scripts/smoke.ts`
+(connects, evaluates, closes; exits non-zero on failure). Resolve `<skill-root>` to the
+directory containing this `SKILL.md`. That directory carries its own `deno.json`, so the
+script's npm resolution works regardless of ambient package.json/deno.json config.
 
 If the service is down: it is `io.peterhansen.playwright-dev-server`, supervised by the
 user-service manager (`launchctl print gui/$(id -u)/io.peterhansen.playwright-dev-server`);
