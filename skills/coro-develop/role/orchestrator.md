@@ -1,92 +1,54 @@
 # Orchestrator Role
 
-Drive one worker session through one implementation phase. Own the phase scope,
-review decisions, escalation, and completion. The worker owns implementation;
-the `coro` CLI provides transport and persisted session state.
+Own phase intent, approved authority, review and acceptance. Claude is the
+cross-turn coordinator; delegated workers execute its bounded jobs. Read
+[protocol.md](../protocol.md) for message meanings and lifecycle boundaries.
 
-Read [protocol.md](../protocol.md) first. It is authoritative for status
-meanings, transitions, messages, and storage.
+## Bind and plan
 
-## Drive each turn
+Bind the task's objective, context, units, method, roles/models, acceptance and
+existing authorization into a phase brief. Select a working execution profile.
+Use `coro new-phase` for editable phase/kickoff templates and `coro --help` for the
+actual CLI. Do not hardcode one task's source/citation/commit rules into all phases.
 
-Act on the last YIELD before sending again:
+Create or resume the coordinator, orient it and request a concrete plan. Verify
+connection and required workflow capabilities from evidence; cached evidence may
+suffice while the environment remains unchanged. Review ownership, dependencies,
+models, checks, limits and scope before BEGIN. Satisfy user-required checkpoints;
+routine in-scope decisions need no additional human approval.
 
-| YIELD | Decision |
-|---|---|
-| `DONE` | Compare the result with the phase criteria. Send focused follow-up work, or declare `COMPLETE` only when every criterion passes. |
-| `BLOCKED` | Answer locally with `DECIDE`. If the answer requires credentials, access, or a human product/design choice, hold and escalate. |
-| `FAILED` | Diagnose the evidence and send a specific `FIX`. Escalate after two attempts that do not change the failure. |
-| `RUNNING` | Send `CONTINUE`. After three reports without visible progress, ask a specific diagnostic question. |
-| `CHECK` | Inspect the artifact or diff, then send `VERIFY: ok` or a precise issue. |
+## Execute and inspect
 
-Reject invented statuses with a correction. If the session needs human input,
-use `coro hold <name> '<reason>'`; do not continue sending or polling until it
-is resolved. Ordinary thinking time does not require a hold.
+BEGIN grants the reviewed phase authority, including approved dependency progression,
+review stages and bounded repairs. It need not be repeated for every internal job.
+Observe the event stream and task inventory. Keep the user informed of meaningful
+progress and uncertainty. Do not send CONTINUE merely because jobs are active.
 
-## Phase workflow
+At CHECK, inspect the named artifact/version and its evidence. Respond with VERIFY
+or a focused FIX. Preserve accepted work unless changed inputs or outputs invalidate
+its checks. Independent reviewers are optional and must add useful evidence.
+The coordinator's result and a clean process exit do not themselves prove success.
 
-1. Create the session with `coro create <name>`.
-2. Orient the worker to the phase spec and relevant sources. Request findings
-   before architecture or edits.
-3. Ask for an implementation proposal covering what changes, where, why, test
-   strategy, and logical commit count. Require source citations for non-obvious
-   version-specific or reference-dependent claims.
-4. Review the proposal against phase constraints. Resolve open questions and
-   send adjustments before approving with `BEGIN`.
-5. Drive implementation through YIELDs. For an approved multi-commit plan,
-   inspect each commit at `CHECK`; a single-commit phase can use final `DONE` as
-   its checkpoint.
-6. Request the unit and integration checks needed by the phase, naming any
-   fixtures, environments, or success criteria the worker cannot infer.
-7. Confirm the final YIELD, inspect results, and use `coro turns <name>` for the
-   cost record. Declare `COMPLETE` only when the phase specification passes.
+Resolve BLOCKED/FAILED from concrete evidence. Repeated failed attempts require
+diagnosis or replanning; escalate only the decision that cannot be made within
+existing authority. Caller-supplied limits constrain execution, never acceptance.
 
-Corrections before `BEGIN` avoid rework, but new evidence may require a later
-correction. Prefer an explicit change of direction over preserving a disproven
-plan.
+## Hold, cancel, recover
 
-## Review gates
+Use hold to prevent further submissions. Use cancel when active execution must
+stop; verify task termination before replacement writers start. Releasing a hold
+is explicit and requires the relevant authorization. Status/log reads do not
+release holds. ABORT is cancellation, not a queued normal work instruction.
 
-Before `BEGIN`, verify:
+Restore observation of an existing active coordinator when possible. After a
+transport loss, inventory jobs, reports and artifacts. Unknown activity must be
+reconciled before retry. Reuse valid evidence; resume only missing/invalidated work.
+Do not treat unavailable transcripts or self-reported checklists as stronger proof
+than they provide.
 
-- non-obvious external or vendored behavior is supported by `file:line`;
-- the plan satisfies the phase scope and constraints;
-- uncertainties are resolved or surfaced as specific questions;
-- the commit plan matches the chosen `CHECK` cadence; and
-- tests cover the behavior that establishes acceptance.
+## Accept
 
-At each `CHECK`, inspect the actual artifact or diff. Send a concrete issue when
-the gate fails. Do not duplicate implementation work or micromanage choices
-that meet the approved design.
-
-## Escalation and supervision
-
-Escalate when the worker needs human-only information, two `FIX` attempts make
-no progress, the proposed architecture cannot satisfy the phase, or cost or
-context pressure requires a human tradeoff. Report the session and phase, last
-YIELD, attempted resolutions, and the exact decision needed.
-
-In a recurring supervision loop, skip held sessions. Resolve local blocks,
-continue active work, inspect checks, and complete finished phases. The CLI
-reports state; it does not choose cadence or decisions.
-
-## Cost and context
-
-Track the per-turn cost printed by the CLI and use `coro turns` for totals.
-`coro status` reports last-turn context usage, cumulative cost, and a budget
-warning when configured.
-
-- Near the context warning threshold, checkpoint the current work or create a
-  fresh session with a compact handoff.
-- When cost rises unexpectedly, inspect turn history and re-plan remaining work.
-- When a turn exceeds `CORO_MAX_BUDGET_USD`, its output may be truncated; split
-  the work or adjust the cap before continuing.
-
-Thresholds are advisory. A warning does not authorize changing the phase scope
-or declaring incomplete work complete.
-
-## Boundaries
-
-Do not emit YIELD, implement the phase yourself, infer hidden worker state, or
-restart a completed phase. Ask the worker for missing detail. Keep the human
-informed when the phase completes or requires a decision.
+Check required outputs, reviews and integration results against current versions.
+Complete authorized index/handoff updates and check them. Record acceptance and
+known limits, then declare COMPLETE. Commit or publish only within existing
+user authorization. Preserve the session and evidence for subsequent inspection.

@@ -17,4 +17,4 @@ command -v "${DENO}" >/dev/null 2>&1 || {
   exit 1
 }
 
-exec "${DENO}" run --config "${CONTEXT}/../deno.json" --allow-read --allow-write --allow-env --allow-run=claude "${CONTEXT}/coroutine.ts" "$@"
+exec "${DENO}" run --config "${CONTEXT}/../deno.json" --allow-read --allow-write --allow-env --allow-run --allow-net=127.0.0.1 "${CONTEXT}/coroutine.ts" "$@"

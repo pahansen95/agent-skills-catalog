@@ -1,25 +1,12 @@
-# Phase {slug} Kickoff
+# Phase {slug} kickoff
 
-Follow the worker YIELD contract and the phase's scope-deviation policy.
+You are the cross-turn coordinator for phase {slug}.
+Read `.cache/TODO/phase-{slug}.md` and its assigned context and skills.
 
-## Context
+Orient and propose a concrete plan in this turn. Identify unresolved scope or
+capabilities, units/dependencies, ownership, role models/efforts, worker methods,
+checks, repair authority and reserved checkpoints. Verify the workflow-authoring
+API if delegated Workflow execution is proposed. No dispatch or output edits yet.
 
-Implementation phase {slug} for the assigned project.
-
-Dependencies:
-- (relevant specifications, commits, or earlier phases)
-
-Full spec: `.cache/TODO/phase-{slug}.md`.
-
-## Turn 1 task
-
-Orient only. Do not write code. Do not propose architecture.
-
-Read:
-- `.cache/TODO/phase-{slug}.md`.
-- (relevant project and reference files)
-
-Report your understanding of the goal, constraints, relevant code, open
-questions, and evidence for non-obvious claims. Cite `file:line` where useful.
-
-End with `YIELD: DONE | orientation complete`.
+Return the plan and evidence needed for primary review.
+End `YIELD: CHECK | phase {slug} plan ready; unresolved decisions named`.

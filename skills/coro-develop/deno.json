@@ -3,7 +3,7 @@
     "fmt": "deno fmt --check scripts tests",
     "check": "deno check scripts/coroutine.ts",
     "lint": "deno lint scripts tests",
-    "test": "deno test --allow-read --allow-write --allow-env --allow-run tests"
+    "test": "deno test --allow-read --allow-write --allow-env --allow-run --allow-net=127.0.0.1 tests"
   },
   "fmt": { "lineWidth": 100 }
 }

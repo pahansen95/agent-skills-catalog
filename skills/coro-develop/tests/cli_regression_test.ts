@@ -38,6 +38,7 @@ async function project(fn: (p: Project) => Promise<void>) {
       PATH: bin + ":" + env.PATH,
       LC_ALL: "C",
       CORO_PROJECT: root,
+      CORO_ROLE: "worker",
       CORO_TEST_DENO: Deno.execPath(),
       CORO_TEST_FIXTURE: fixture,
       CORO_TEST_CAPTURE: join(root, "calls.jsonl"),
@@ -121,7 +122,7 @@ Deno.test("CLI resumes Python-format state with exact payload and invocation def
     const args = calls[0].args as string[];
     assert.equal(args[args.indexOf("--resume") + 1], "11111111-2222-4333-8444-555555555555");
     assert.equal(args[args.indexOf("--effort") + 1], "high");
-    assert(args.includes("--dangerously-skip-permissions"));
+    assert(!args.includes("--dangerously-skip-permissions"));
     assert.equal(readLines(join(dir, "turns", "001.jsonl")).length, 3);
     assert.equal(
       Deno.readTextFileSync(join(dir, "uuid")).trim(),
@@ -166,7 +167,7 @@ Deno.test("CLI creates a resumable session and suppresses preamble text", () =>
     const payload = calls[0].payload as { message: { content: string } };
     assert.equal(
       payload.message.content,
-      "/salience on\n\n" + Deno.readTextFileSync(join(skill, "role", "worker.md")).trim() +
+      Deno.readTextFileSync(join(skill, "role", "worker.md")).trim() +
         "\n\nAcknowledge this role and wait for your first instruction.",
     );
     assert.match(r.err, /\[coroutine\] YIELD: DONE/);
@@ -233,14 +234,18 @@ Deno.test("CLI reports assigned/reported UUID mismatch while preserving assigned
     );
   }));
 
-Deno.test("CLI hold state distinguishes empty reason, cleared state, and automatic resume", () =>
+Deno.test("CLI hold state distinguishes empty reason, cleared state, and explicit resume", () =>
   project(async (p) => {
     const dir = seed(p);
     successful(await p.call(["hold", "fixture", "review", "needed"]));
     assert.match((await p.call(["status"])).out, /hold: {5}yes — review needed/);
+    const rejected = await p.call(["send"], "continue");
+    assert.equal(rejected.code, 1);
+    assert.match(rejected.err, /held/);
+    successful(await p.call(["unhold"]));
     const resumed = await p.call(["send"], "continue");
     successful(resumed);
-    assert.match(resumed.err, /cleared hold.*reason: review needed/);
+
     assert.throws(() => Deno.statSync(join(dir, "hold")), Deno.errors.NotFound);
     successful(await p.call(["hold", "fixture"]));
     assert.equal((await p.call(["unhold"])).out, "unheld session fixture_1700000000\n");

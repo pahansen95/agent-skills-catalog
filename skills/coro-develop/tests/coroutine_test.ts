@@ -184,7 +184,7 @@ test("result helpers, thresholds, and all yield forms", () => {
         String(extractYield(text)).startsWith("yield:"),
     );
   }
-  assert.equal(tokenWarnThreshold(resolve("sonnet")), 160000);
+  assert.equal(tokenWarnThreshold(resolve("sonnet")), 800000);
   assert.equal(costWarnThreshold(resolve("haiku")), 10);
 });
 test("turn numbering, empty/missing state and malformed name rejection", () => {
@@ -228,9 +228,10 @@ test("missing project override reports CoroError", () => {
 test("model aliases, extended contexts, and effort fallbacks are deterministic", () => {
   for (
     const [input, id, effort] of [
-      ["opus", "claude-opus-4-7", "xhigh"],
-      ["best", "claude-opus-4-7", "xhigh"],
-      ["sonnet", "claude-sonnet-4-6", "high"],
+      ["opus", "claude-opus-5", "high"],
+      ["best", "claude-fable-5-1", "high"],
+      ["fable", "claude-fable-5-1", "high"],
+      ["sonnet", "claude-sonnet-5", "high"],
       ["haiku", "claude-haiku-4-5", null],
     ] as const
   ) {
@@ -244,18 +245,6 @@ test("model aliases, extended contexts, and effort fallbacks are deterministic",
 });
 for (
   const [id, names, defaultEffort, extendedContext] of [
-    [
-      "claude-opus-4-7",
-      ["opus", "best", "claude-opus-4-7", "claude-opus-4-7-20260101"],
-      "xhigh",
-      1000000,
-    ],
-    [
-      "claude-sonnet-4-6",
-      ["sonnet", "claude-sonnet-4-6", "claude-sonnet-4-6-20260101"],
-      "high",
-      1000000,
-    ],
     ["claude-haiku-4-5", ["haiku", "claude-haiku-4-5", "claude-haiku-4-5-20260101"], null, 200000],
   ] as const
 ) {

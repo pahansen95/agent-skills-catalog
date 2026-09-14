@@ -40,8 +40,7 @@ discovery of `.agent/skill` directories is provided here.
 `coro-develop` requires Deno 2.9.6 or newer and the `claude` CLI at runtime;
 its launcher uses the skill-local Deno configuration and preserves the caller's
 working directory. `rca-conduct` requires `iterative-docs` and `coro-develop`
-to be available in the same session. Coroutine workers activate `/salience on`
-for their worker-role preamble.
+to be available in the same session. Coroutine phase briefs specify any required communication or drafting skills.
 
 ## What a skill is and how to draft one
 

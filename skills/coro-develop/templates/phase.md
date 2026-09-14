@@ -1,56 +1,44 @@
 # Phase {slug} — TITLE
 
-## Context
+## Objective and scope
 
-(Why this phase exists and any relevant completed work.)
+- Intended outcome and deliverables:
+- Exclusions:
+- Context, input revisions and dependencies:
 
-Dependencies:
-- (specifications, commits, or earlier phases this work relies on)
+## Work units and method
 
-## Goal
+| Unit | Depends on | Inputs | Output/write ownership | Method and required skills |
+|---|---|---|---|---|
+| | | | | |
 
-- (observable outcome)
+## Roles and execution profile
 
-## Out of scope
+- Coordinator model/effort:
+- Worker and optional reviewer model/effort:
+- Verified CLI connection/profile:
+- Permitted concurrency and isolation:
+- Caller-supplied execution limits, if any:
 
-- (excluded work)
+## Authority and checkpoints
 
-## Design constraints
+- Existing user authorization:
+- Decisions reserved to primary/user:
+- Allowed dependency progression, review and bounded repair:
+- Further delegation allowed:
+- Files/actions outside scope:
+- Authorized completion actions (including commit/publication, if any):
 
-- (required invariant or compatibility constraint)
+## Acceptance
 
-## Files you may touch
+- Checks, coverage and expected outcomes per unit:
+- Review evidence and output-version identification:
+- Integration checks:
+- Allowed unresolved limitations:
+- Required evidence before BEGIN:
 
-**Modify:**
--
+## Recovery
 
-**Add:**
--
-
-**Do NOT touch:**
--
-
-## Work
-
-### {slug}.1 —
-
-### {slug}.2 —
-
-## Verification
-
-- (automated test or manual check and its expected result)
-
-## Evidence required before BEGIN
-
-- (non-obvious claim that needs a source citation)
-
-## Success gate
-
-- (acceptance criterion)
-- Required checks pass.
-- Changes follow the project's commit conventions.
-
-## Scope deviation policy
-
-Do not expand the phase to adjacent cleanup or latent defects. Report a needed
-change outside the authorized scope and wait for an explicit decision.
+Preserve requests, scripts and results per attempt. Reconcile active/unknown work
+before replacing writers. Reuse acceptance only while its inputs and outputs remain
+valid. Scope changes return to primary; COMPLETE requires all required checks.

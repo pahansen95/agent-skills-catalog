@@ -1,44 +1,35 @@
 #!/usr/bin/env -S deno run
 /** Stateful Claude session manager.  The files it writes are deliberately
  * compatible with the former Python implementation. */
+import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import {
+  ensureService,
+  type ProcessRunner,
+  type Profile,
+  readService,
+  serve,
+  serviceCall,
+  stopService,
+  SubprocessRunner,
+} from "./transport.ts";
+export { type ProcessRunner, SubprocessRunner } from "./transport.ts";
+import {
+  atomicJson,
+  checkAttempt,
+  markUnknown,
+  readAttempts,
+  readPool,
+  reconcileTask,
+  sealAttempt,
+  snapshotAttempt,
+  type TaskState,
+} from "./pool.ts";
 
 export class CoroError extends Error {}
 type Event = Record<string, unknown>;
 const DEFAULT_MODEL = "sonnet";
-const specs = [
-  {
-    id: "claude-opus-4-7",
-    aliases: ["opus", "best"],
-    context: 200000,
-    extended: 1000000,
-    maxOutput: 128000,
-    efforts: ["low", "medium", "high", "xhigh", "max"],
-    defaultEffort: "xhigh",
-    cost: 50,
-  },
-  {
-    id: "claude-sonnet-4-6",
-    aliases: ["sonnet"],
-    context: 200000,
-    extended: 1000000,
-    maxOutput: 64000,
-    efforts: ["low", "medium", "high", "max"],
-    defaultEffort: "high",
-    cost: 25,
-  },
-  {
-    id: "claude-haiku-4-5",
-    aliases: ["haiku"],
-    context: 200000,
-    extended: null,
-    maxOutput: 64000,
-    efforts: [],
-    defaultEffort: null,
-    cost: 10,
-  },
-] as const;
-type Spec = typeof specs[number];
+import { type Spec, specs } from "./models.ts";
 export type ResolvedModel = {
   claudeArg: string;
   spec: Spec | undefined;
@@ -139,6 +130,7 @@ export function listSlugs(root: string) {
   ).map((e) => e.name).sort();
 }
 export function resolveSlug(root: string, arg: string) {
+  if (arg.includes("/") || arg === "." || arg === "..") die("session names cannot contain paths");
   if (exists(sessionFile(root, arg))) return arg;
   const ms = listSlugs(root).filter((s) => parseSlug(s)?.[0] === arg);
   if (!ms.length) {
@@ -291,7 +283,6 @@ const flags = (
   "--input-format",
   "stream-json",
   "--verbose",
-  "--dangerously-skip-permissions",
   ...(r.effort ? ["--effort", r.effort] : []),
   ...env("CORO_ADD_DIRS").split(":").flatMap((d) => d.trim() ? ["--add-dir", d.trim()] : []),
 ];
@@ -305,7 +296,7 @@ export function buildClaudeArgv(
     die("build_claude_argv requires exactly one of session_id or resume_uuid");
   }
   return [
-    "claude",
+    env("CORO_CLAUDE", "claude"),
     "--print",
     "--model",
     r.claudeArg,
@@ -313,97 +304,6 @@ export function buildClaudeArgv(
     ...(sessionId ? ["--session-id", sessionId] : ["--resume", resume!]),
     ...(maxBudget ? ["--max-budget-usd", maxBudget] : []),
   ];
-}
-export interface ProcessRunner {
-  runStreamJson(
-    argv: string[],
-    options: { cwd: string; env: Record<string, string>; stdinPayload: string },
-  ): AsyncIterable<Event>;
-}
-export class SubprocessRunner implements ProcessRunner {
-  async *runStreamJson(
-    argv: string[],
-    o: { cwd: string; env: Record<string, string>; stdinPayload: string },
-  ) {
-    const p = new Deno.Command(argv[0], {
-      args: argv.slice(1),
-      cwd: o.cwd,
-      env: o.env,
-      clearEnv: true,
-      stdin: "piped",
-      stdout: "piped",
-      stderr: "piped",
-    }).spawn();
-    const feed = (async () => {
-      const w = p.stdin.getWriter();
-      await w.write(new TextEncoder().encode(o.stdinPayload));
-      await w.close();
-    })().catch(() => {/* child may have exited before accepting stdin */});
-    const stderr = (async () => {
-      const reader = p.stderr.getReader(), chunks: Uint8Array[] = [];
-      let size = 0;
-      try {
-        for (;;) {
-          const item = await reader.read();
-          if (item.done) break;
-          if (size < 500) {
-            const part = item.value.slice(0, 500 - size);
-            chunks.push(part);
-            size += part.length;
-          }
-        }
-      } finally {
-        reader.releaseLock();
-      }
-      const output = new Uint8Array(size);
-      let offset = 0;
-      for (const chunk of chunks) {
-        output.set(chunk, offset);
-        offset += chunk.length;
-      }
-      return new TextDecoder().decode(output);
-    })();
-    const reader = p.stdout.pipeThrough(new TextDecoderStream()).getReader();
-    let buf = "";
-    let completed = false;
-    try {
-      for (;;) {
-        const q = await reader.read();
-        if (q.done) break;
-        buf += q.value;
-        let i;
-        while ((i = buf.indexOf("\n")) >= 0) {
-          const line = buf.slice(0, i).trim();
-          buf = buf.slice(i + 1);
-          try {
-            if (line) yield JSON.parse(line);
-          } catch { /* malformed stream line */ }
-        }
-      }
-      if (buf.trim()) {
-        try {
-          yield JSON.parse(buf.trim());
-        } catch { /* malformed trailing stream line */ }
-      }
-      completed = true;
-    } finally {
-      if (!completed) {
-        try {
-          p.kill("SIGTERM");
-        } catch { /* child already exited */ }
-      }
-      try {
-        await reader.cancel();
-      } catch { /* reader already completed */ }
-      reader.releaseLock();
-      await feed;
-      const status = await p.status;
-      const err = await stderr;
-      if (!status.success && err) {
-        warn(`claude exited with code ${status.code}: ${err.trim()}`);
-      }
-    }
-  }
 }
 export async function runClaude(
   root: string,
@@ -474,12 +374,10 @@ export function skillRoot(source = import.meta.url): string {
     directory = parent;
   }
 }
-function preamble() {
-  const path = join(skillRoot(), "role", "worker.md");
+function preamble(role = "worker") {
+  const path = join(skillRoot(), "role", `${role}.md`);
   if (!exists(path)) die(`role/worker.md not found at ${path}`);
-  return `/salience on\n\n${
-    text(path).trim()
-  }\n\nAcknowledge this role and wait for your first instruction.`;
+  return `${text(path).trim()}\n\nAcknowledge this role and wait for your first instruction.`;
 }
 function streamWriter(file: Deno.FsFile, visible = true) {
   return (e: Event) => {
@@ -512,7 +410,92 @@ function writeAll(file: { writeSync(bytes: Uint8Array): number }, bytes: Uint8Ar
   let offset = 0;
   while (offset < bytes.length) offset += file.writeSync(bytes.subarray(offset));
 }
+function coordinator(root: string, slug: string) {
+  return loadMeta(root, slug).role === "coordinator";
+}
+function identifier(value: string) {
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(value)) {
+    die("invalid name: use letters, digits, underscores or hyphens");
+  }
+}
+export function connectionProfile(): Profile {
+  const r = resolve(env("CORO_MODEL", DEFAULT_MODEL), env("CORO_EFFORT"));
+  r.warnings.forEach(warn);
+  const persistence = env("CORO_PERSISTENCE", "native");
+  if (persistence !== "native" && persistence !== "journal") {
+    die("CORO_PERSISTENCE must be native or journal");
+  }
+  const permissionMode = env("CORO_PERMISSION_MODE");
+  if (
+    permissionMode && !["manual", "acceptEdits", "dontAsk", "plan", "auto"].includes(permissionMode)
+  ) die("unsupported CORO_PERMISSION_MODE");
+  const allowedTools = JSON.parse(env("CORO_ALLOWED_TOOLS", "[]"));
+  if (!Array.isArray(allowedTools) || !allowedTools.every((v) => typeof v === "string")) {
+    die("CORO_ALLOWED_TOOLS must be a JSON string array");
+  }
+  return {
+    executable: env("CORO_CLAUDE", "claude"),
+    model: r.spec ? r.spec.id + (r.extended ? "[1m]" : "") : r.claudeArg,
+    effort: r.effort,
+    persistence: persistence as Profile["persistence"],
+    permissionMode: permissionMode as Profile["permissionMode"] || undefined,
+    allowedTools,
+    addDirs: env("CORO_ADD_DIRS").split(":").map((v) => v.trim()).filter(Boolean),
+    maxBudget: env("CORO_MAX_BUDGET_USD") || undefined,
+  };
+}
 async function create(root: string, name: string) {
+  identifier(name);
+  const role = env("CORO_ROLE", "coordinator");
+  if (role === "worker") return await createWorker(root, name);
+  if (role !== "coordinator") die("CORO_ROLE must be coordinator or worker");
+  if (parseSlug(name)) die("pick a name without a trailing _<digits>");
+  const slug = makeSlug(name), dir = slugDir(root, slug), profile = connectionProfile();
+  if (exists(dir)) die(`slug '${slug}' already exists`);
+  Deno.mkdirSync(coroDir(root), { recursive: true });
+  Deno.mkdirSync(dir, { mode: 0o700 });
+  saveSession(root, slug, crypto.randomUUID(), profile.model);
+  atomicJson(metaFile(root, slug), { role, model: profile.model, profile });
+  currentPush(root, slug);
+  await ensureService(dir, root, fileURLToPath(import.meta.url));
+  await serviceCall(dir, { op: "send", content: preamble("coordinator") });
+  console.log(slug);
+  console.error(
+    "Role submitted; inspect status before the first instruction. Creation does not consume stdin.",
+  );
+}
+async function send(root: string, arg?: string) {
+  const slug = resolveSessionArg(root, arg);
+  loadSession(root, slug);
+  if (!coordinator(root, slug)) return await sendWorker(root, slug);
+  if (readHold(root, slug)[0]) die("session is held; use unhold after resolving the decision");
+  const content = (await new Response(Deno.stdin.readable).text()).trim();
+  if (!content) die("stdin is empty");
+  const dir = slugDir(root, slug);
+  await ensureService(dir, root, fileURLToPath(import.meta.url));
+  console.log(JSON.stringify(await serviceCall(dir, { op: "send", content })));
+}
+async function coordinatorStatus(root: string, slug: string) {
+  const dir = slugDir(root, slug);
+  try {
+    console.log(JSON.stringify(await serviceCall(dir, { op: "status" }), null, 2));
+  } catch (error) {
+    console.log(
+      JSON.stringify(
+        {
+          connected: false,
+          observationError: String(error),
+          held: readHold(root, slug)[0],
+          tasks: readPool(dir).tasks,
+          recovery: "Inspect service logs and task termination before restarting.",
+        },
+        null,
+        2,
+      ),
+    );
+  }
+}
+async function createWorker(root: string, name: string) {
   if (parseSlug(name)) {
     die(
       `refusing to create session with slug-shaped name '${name}' — pick a name without a trailing _<digits>`,
@@ -626,7 +609,7 @@ async function create(root: string, name: string) {
     }
   }
 }
-async function send(root: string, arg?: string) {
+async function sendWorker(root: string, arg?: string) {
   const slug = resolveSessionArg(root, arg),
     id = loadSession(root, slug),
     meta = loadMeta(root, slug),
@@ -635,11 +618,8 @@ async function send(root: string, arg?: string) {
   r.warnings.forEach(warn);
   const content = (await new Response(Deno.stdin.readable).text()).trim();
   if (!content) die("stdin is empty");
-  const priorHold = clearHold(root, slug);
-  if (priorHold !== null) {
-    console.error(
-      `note: cleared hold on session '${slug}'${priorHold ? ` (reason: ${priorHold})` : ""}`,
-    );
+  if (readHold(root, slug)[0]) {
+    die(`session '${slug}' is held; use unhold after resolving the decision`);
   }
   const lock = acquireSendLock(root, slug);
   try {
@@ -783,6 +763,7 @@ function turns(root: string, arg?: string) {
   console.log(`  total        $${sessionTotalCost(root, s).toFixed(4)}`);
 }
 function newPhase(root: string, slug: string, force: boolean) {
+  identifier(slug);
   const todo = join(root, ".cache", "TODO"),
     spec = join(todo, `phase-${slug}.md`),
     kickoff = join(todo, `phase-${slug}-kickoff.md`);
@@ -813,6 +794,15 @@ export function sessionTotalCost(r: string, s: string) {
 }
 export class CliUsageError extends CoroError {}
 const commandSyntax: Record<string, [number, number, string]> = {
+  persistence: [2, 2, "<session> <native|journal> (frontend must be stopped)"],
+  cancel: [0, 2, "[<session>] [<task-id>]"],
+  shutdown: [0, 1, "[<session>]"],
+  jobs: [0, 1, "[<session>]"],
+  attempt: [0, 1, "[<session>] < attempt.json"],
+  attempts: [0, 1, "[<session>]"],
+  "attempt-seal": [2, 2, "<session> <attempt-id> < result.json"],
+  "attempt-check": [2, 2, "<session> <attempt-id>"],
+  reconcile: [4, Infinity, "<session> <task-id> <completed|failed|cancelled> <evidence>"],
   create: [1, 1, "<name>"],
   send: [0, 1, "[<name-or-slug>]"],
   status: [0, 1, "[<name-or-slug>]"],
@@ -826,16 +816,29 @@ const commandSyntax: Record<string, [number, number, string]> = {
   "new-phase": [1, 1, "<slug> [--force]"],
 };
 const help = [
-  "usage: coro {create,send,status,turns,log,use,pop,list,hold,unhold,new-phase} ...",
+  `usage: coro {${Object.keys(commandSyntax).join(",")}} ...`,
+  "",
+  "Coordinator create/send return submission acknowledgments. Inspect status/log/jobs.",
+  "cancel uses Claude controls; shutdown closes the frontend. Neither accepts artifacts.",
+  "attempt snapshots {id,request,script?,inputs?,outputs?,checks?,previous?} from stdin JSON.",
+  "attempt-seal records result evidence + output hashes once; attempt-check detects changes.",
+  "reconcile requires a stopped frontend and explicit termination evidence for unknown tasks.",
+  "",
+  "  CORO_ROLE       coordinator (default) or worker; existing roles are retained",
+  "  CORO_CLAUDE     executable path (default: claude)",
+  "  CORO_PERSISTENCE native (default) or journal (visible-history recovery)",
+  "  CORO_PERMISSION_MODE optional explicit Claude permission mode; no bypass",
+  "  CORO_ALLOWED_TOOLS JSON array of allowed Claude tool patterns",
+  "  Coordinator connection settings are saved at create and reused.",
   "",
   "Runtime config via env:",
-  "  CORO_MODEL      alias (opus|sonnet|haiku|best), canonical id, or [1m]-suffixed;",
+  "  CORO_MODEL      alias (fable|opus|sonnet|haiku|best), canonical id, or [1m]-suffixed;",
   "                  unknown slugs pass through with a warning. Default: sonnet.",
   "  CORO_EFFORT     low|medium|high|xhigh|max. If unset, the model default is used;",
   "                  does not inherit CLAUDE_CODE_EFFORT_LEVEL.",
   "  CORO_PROJECT    project root (default: auto-discover)",
   "  CORO_ADD_DIRS   colon-separated --add-dir paths",
-  "  CORO_MAX_BUDGET_USD  per-turn budget cap (soft-fail in send, hard-fail in create)",
+  "  CORO_MAX_BUDGET_USD  Claude process budget cap (per turn for legacy workers)",
   "  CORO_TOKEN_WARN_RATIO / CORO_TOKEN_WARN / CORO_COST_WARN  override thresholds",
   "",
   "Subprocess env defaults (set when unset in parent):",
@@ -887,6 +890,7 @@ export function parseCommand(argv: string[]) {
 }
 export async function main(argv = Deno.args) {
   try {
+    if (argv[0] === "_serve" && argv.length === 3) return await serve(argv[1], argv[2]);
     const { command: cmd, args, force, help: requestedHelp } = parseCommand(argv);
     if (requestedHelp !== undefined) {
       console.log(requestedHelp);
@@ -895,8 +899,85 @@ export async function main(argv = Deno.args) {
     const root = findProjectRoot();
     if (cmd === "create") await create(root, args[0]);
     else if (cmd === "send") await send(root, args[0]);
-    else if (cmd === "status") status(root, args[0]);
-    else if (cmd === "turns") turns(root, args[0]);
+    else if (cmd === "status") {
+      const slug = resolveSessionArg(root, args[0]);
+      if (coordinator(root, slug)) await coordinatorStatus(root, slug);
+      else status(root, slug);
+    } else if (
+      [
+        "cancel",
+        "shutdown",
+        "jobs",
+        "attempt",
+        "attempts",
+        "attempt-seal",
+        "attempt-check",
+        "reconcile",
+      ].includes(cmd)
+    ) {
+      const slug = resolveSessionArg(root, args[0]), dir = slugDir(root, slug);
+      let result: unknown;
+      if (cmd === "jobs") result = readPool(dir);
+      else if (cmd === "attempts") result = readAttempts(dir);
+      else if (cmd === "attempt") {
+        result = await snapshotAttempt(
+          dir,
+          JSON.parse(await new Response(Deno.stdin.readable).text()),
+        );
+      } else if (cmd === "attempt-seal") {
+        result = await sealAttempt(
+          dir,
+          args[1],
+          JSON.parse(await new Response(Deno.stdin.readable).text()),
+        );
+      } else if (cmd === "attempt-check") result = await checkAttempt(dir, args[1]);
+      else if (cmd === "reconcile") {
+        const endpoint = readService(dir);
+        if (endpoint) {
+          try {
+            Deno.kill(endpoint.pid, 0);
+            die("stop the frontend before reconciling");
+          } catch (e) {
+            if (!(e instanceof Deno.errors.NotFound)) throw e;
+          }
+        }
+        const pool = readPool(dir);
+        markUnknown(pool);
+        atomicJson(join(dir, "pool.json"), pool);
+        reconcileTask(dir, args[1], args[2] as TaskState, args.slice(3).join(" "));
+        result = readPool(dir);
+      } else {
+        if (!coordinator(root, slug)) die("control commands require a coordinator session");
+        result = cmd === "shutdown"
+          ? await stopService(dir)
+          : await serviceCall(dir, { op: "cancel", taskId: args[1] });
+      }
+      console.log(JSON.stringify(result, null, 2));
+    } else if (cmd === "persistence") {
+      const slug = resolveSessionArg(root, args[0]), dir = slugDir(root, slug);
+      const meta = loadMeta(root, slug);
+      if (!coordinator(root, slug)) die("persistence configuration requires a coordinator");
+      if (!["native", "journal"].includes(args[1])) die("persistence must be native or journal");
+      if (readService(dir)) die("shutdown the frontend before changing persistence");
+      if (
+        Object.values(readPool(dir).tasks).some((t) => ["running", "unknown"].includes(t.state))
+      ) die("reconcile task termination before changing persistence");
+      const connectionPath = join(dir, "connection.json");
+      if (exists(connectionPath)) {
+        const connection = JSON.parse(text(connectionPath));
+        if (connection.state !== "ended") {
+          try {
+            Deno.kill(connection.childPid, 0);
+            die("Claude may still be active");
+          } catch (e) {
+            if (!(e instanceof Deno.errors.NotFound)) throw e;
+          }
+        }
+      }
+      (meta.profile as Profile).persistence = args[1] as Profile["persistence"];
+      atomicJson(metaFile(root, slug), meta);
+      console.log(`persistence=${args[1]}; next send reconnects explicitly`);
+    } else if (cmd === "turns") turns(root, args[0]);
     else if (cmd === "new-phase") newPhase(root, args[0], force);
     else if (cmd === "use") {
       const s = resolveSlug(root, args[0]);
